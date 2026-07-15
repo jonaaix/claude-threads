@@ -201,6 +201,7 @@ Other AI assistants share this thread and can be brought in:
 ${list}
 
 **How to hand off to one of them — read carefully:**
+- **Writing another assistant's plain-text \`@name\` hands off the task to them** — only do it when you actually mean to delegate, not when just referring to them.
 - Write its name as **plain text** \`@${example}\` — nothing around it. This EXACT literal form is the only thing that reaches it.
 - Do NOT bold it, italicize it, put it in code/backticks, or add a space after \`@\`. All of these FAIL to notify:
   - ✅ \`@${example}\`

@@ -312,6 +312,12 @@ describe('buildPeerBotContext', () => {
     expect(section).toContain('`@infra-bot` — infra & deploys');
   });
 
+  it('warns that a plain-text @name hands off the task (avoid accidental baton loss)', () => {
+    const section = buildPeerBotContext([{ name: 'peer-bot-2' }]);
+    expect(section).toContain('hands off the task');
+    expect(section.toLowerCase()).toContain('only do it when you actually mean to delegate');
+  });
+
   it('allows proactive handoff without requiring explicit user permission', () => {
     const section = buildPeerBotContext([{ name: 'peer-bot-2', description: 'x' }]);
     expect(section.toLowerCase()).toContain('explicit permission');
