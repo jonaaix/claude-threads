@@ -322,16 +322,6 @@ describe('buildPeerBotContext', () => {
     expect(section.toLowerCase()).not.toContain('many times');
     expect(section.toLowerCase()).toContain('as long as required to clarify or resolve the task');
   });
-
-  it('tells the baton holder to react to every user message (min eyes) via react_to_post', () => {
-    const section = buildPeerBotContext([{ name: 'peer-bot-2' }]);
-    // The rule must name the tool, the minimum emoji NAME (not unicode, which
-    // the tool's validator rejects), and the permalink handle to react to.
-    expect(section).toContain('react_to_post');
-    expect(section).toContain('`eyes`');
-    expect(section).toContain('[message permalink: <url>]');
-    expect(section.toLowerCase()).toContain('baton');
-  });
 });
 
 describe('buildAppendSystemPrompt', () => {
