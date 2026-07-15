@@ -135,6 +135,10 @@ export class SessionManager extends EventEmitter {
   // bots' system prompts so they know when to hand off to which peer.
   private platformDescription: Map<string, string | undefined> = new Map();
 
+  // Per-platform working-directory override (config `workingDir`). New sessions
+  // start here instead of the global workingDir. Undefined → global default.
+  private platformWorkingDir: Map<string, string | undefined> = new Map();
+
   // Multi-bot baton ("Stab") coordination, keyed by raw threadId. The single
   // in-process source of truth for "which bot may answer in this thread". All N
   // peer clients share this one manager, so this map is shared by every peer.
@@ -219,7 +223,8 @@ export class SessionManager extends EventEmitter {
     overhead?: Partial<PlatformOverhead>,
     agent?: AgentBackendKind,
     model?: string,
-    description?: string
+    description?: string,
+    workingDir?: string
   ): void {
     this.platforms.set(platformId, client);
     this.platformOverhead.set(platformId, {
@@ -229,6 +234,7 @@ export class SessionManager extends EventEmitter {
     this.platformAgent.set(platformId, agent ?? DEFAULT_AGENT_BACKEND);
     this.platformModel.set(platformId, model);
     this.platformDescription.set(platformId, description);
+    this.platformWorkingDir.set(platformId, workingDir);
     client.on('message', (post, user) => this.handleMessage(platformId, post, user));
     client.on('reaction', (reaction, user) => {
       if (user) {
@@ -487,6 +493,7 @@ export class SessionManager extends EventEmitter {
     this.platformAgent.delete(platformId);
     this.platformModel.delete(platformId);
     this.platformDescription.delete(platformId);
+    this.platformWorkingDir.delete(platformId);
     stickyMessage.clearHiddenCleanupTracking(platformId);
   }
 
@@ -647,6 +654,8 @@ export class SessionManager extends EventEmitter {
       getPlatformAgent: (pid) => this.platformAgent.get(pid) ?? DEFAULT_AGENT_BACKEND,
 
       getPlatformModel: (pid) => this.platformModel.get(pid),
+
+      getPlatformWorkingDir: (pid) => this.platformWorkingDir.get(pid),
 
       getPeerBotNames: (pid) => this.getPeerBotNames(pid),
 

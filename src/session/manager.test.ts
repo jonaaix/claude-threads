@@ -130,6 +130,15 @@ describe('SessionManager', () => {
       manager.removePlatform('test-platform');
       // No error should be thrown
     });
+
+    test('exposes the per-platform workingDir override (undefined when not set)', () => {
+      const p = createMockPlatform('wd-platform');
+      // 6th/7th addPlatform args: description, workingDir.
+      manager.addPlatform('wd-platform', p as unknown as PlatformClient, undefined, 'claude', undefined, undefined, '/srv/design-bot');
+      const ops = manager.getContext().ops;
+      expect(ops.getPlatformWorkingDir('wd-platform')).toBe('/srv/design-bot');
+      expect(ops.getPlatformWorkingDir('test-platform')).toBeUndefined();
+    });
   });
 
   describe('isSessionActive', () => {

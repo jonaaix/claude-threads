@@ -666,7 +666,8 @@ async function startWithoutDaemon() {
       platformConfig.agent,
       `platforms[${platformConfig.id}].agent`,
     ), typeof platformConfig.model === 'string' ? platformConfig.model : undefined,
-    typeof platformConfig.description === 'string' ? platformConfig.description : undefined);
+    typeof platformConfig.description === 'string' ? platformConfig.description : undefined,
+    typeof platformConfig.workingDir === 'string' ? platformConfig.workingDir : undefined);
 
     // Wire up platform events
     wirePlatformEvents(platformConfig.id, client, session, ui);

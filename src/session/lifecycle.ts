@@ -924,7 +924,14 @@ export async function startSession(
   // ---------------------------------------------------------------------------
   // Apply initial options from first-message commands (!cd, !permissions)
   // ---------------------------------------------------------------------------
-  let workingDir = ctx.config.workingDir;
+  // Per-platform workingDir override (config), else the bot-wide default. `~` is
+  // expanded so each bot can point at its own directory (own repo / CLAUDE.md).
+  const platformWorkingDir = ctx.ops.getPlatformWorkingDir(platformId);
+  let workingDir = platformWorkingDir
+    ? platformWorkingDir.startsWith('~')
+      ? platformWorkingDir.replace('~', process.env.HOME || '')
+      : platformWorkingDir
+    : ctx.config.workingDir;
   // Start from the bot-wide default. The legacy `skipPermissions` boolean is
   // still consumed by some callers, but the effective mode is what drives
   // Claude CLI spawn below.

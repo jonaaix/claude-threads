@@ -306,6 +306,13 @@ export interface SessionOperations {
   getPlatformModel(platformId: string): string | undefined;
 
   /**
+   * Per-platform working-directory override (config `workingDir`). New sessions
+   * on this platform start here instead of the global workingDir. Undefined →
+   * the global default.
+   */
+  getPlatformWorkingDir(platformId: string): string | undefined;
+
+  /**
    * Bot names of other platforms sharing this platform's channel — the peers a
    * session's bot can hand off to via `@name`. Injected into the system prompt.
    * Empty when no other bot shares the channel.

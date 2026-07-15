@@ -171,6 +171,7 @@ function createSessionContext(): SessionContext {
       getPeerBotNames: mock(() => [] as string[]),
       getPeerBots: mock(() => []),
       getPlatformModel: mock(() => undefined),
+      getPlatformWorkingDir: mock(() => undefined),
     },
   };
 }

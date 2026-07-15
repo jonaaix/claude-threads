@@ -286,6 +286,15 @@ export interface PlatformInstanceConfig {
    */
   description?: string;
   /**
+   * Working directory for THIS bot's sessions, overriding the top-level
+   * `Config.workingDir`. Lets several bots in one process each operate in their
+   * own directory (own repo checkout, own `CLAUDE.md`/`AGENTS.md`, own persona)
+   * — useful when running multiple bots that would otherwise share one dir.
+   * `~` is expanded. Undefined → the global `workingDir`. A per-session `!cd`
+   * still overrides this at runtime.
+   */
+  workingDir?: string;
+  /**
    * Per-thread session header visibility. Default `'full'`.
    * `'minimal'` keeps only the one-line status bar; `'hidden'` skips the
    * header post entirely so Claude's own response is the first message in
