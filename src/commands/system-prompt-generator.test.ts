@@ -7,6 +7,7 @@ import {
   generateChatPlatformPrompt,
   buildSessionContext,
   buildCollaboratorContext,
+  buildPeerBotContext,
   resolveCollaborators,
   formatCollaboratorListForChat,
   buildAppendSystemPrompt,
@@ -286,7 +287,59 @@ describe('formatCollaboratorListForChat', () => {
   });
 });
 
+describe('buildPeerBotContext', () => {
+  it('is empty when there are no peer bots (single-bot channel)', () => {
+    expect(buildPeerBotContext([])).toBe('');
+  });
+
+  it('lists peers and teaches the strict @name handoff rule', () => {
+    const section = buildPeerBotContext([{ name: 'peer-bot-2' }]);
+    expect(section).toContain('## Other assistants in this thread');
+    expect(section).toContain('`@peer-bot-2`');
+    // Hardened: warns against bold-wrapping the mention (the observed failure).
+    expect(section).toContain('**@peer-bot-2**');
+    expect(section.toLowerCase()).toContain('plain text');
+    // Reinforces that a plain reply goes to the user (no bot-to-bot loop).
+    expect(section.toLowerCase()).toContain('goes to the user');
+  });
+
+  it('renders each peer\'s specialization when provided', () => {
+    const section = buildPeerBotContext([
+      { name: 'analytics-bot', description: 'Mixpanel & product analytics' },
+      { name: 'infra-bot', description: 'infra & deploys' },
+    ]);
+    expect(section).toContain('`@analytics-bot` — Mixpanel & product analytics');
+    expect(section).toContain('`@infra-bot` — infra & deploys');
+  });
+
+  it('allows proactive handoff without requiring explicit user permission', () => {
+    const section = buildPeerBotContext([{ name: 'peer-bot-2', description: 'x' }]);
+    expect(section.toLowerCase()).toContain('explicit permission');
+  });
+
+  it('does not push bots toward maximizing exchange (task-driven, not "many times")', () => {
+    const section = buildPeerBotContext([{ name: 'peer-bot-2', description: 'x' }]);
+    expect(section.toLowerCase()).not.toContain('many times');
+    expect(section.toLowerCase()).toContain('as long as required to clarify or resolve the task');
+  });
+});
+
 describe('buildAppendSystemPrompt', () => {
+  it('injects the peer-bot section only when peerBots is provided', async () => {
+    const platform = fakePlatform({});
+    const withPeers = await buildAppendSystemPrompt(
+      platform, 'mm', '/repo', 't1', 'alice', ['alice'], 'STATIC', fakeStore({}),
+      { peerBots: [{ name: 'peer-bot-2' }] },
+    );
+    expect(withPeers).toContain('## Other assistants in this thread');
+    expect(withPeers).toContain('`@peer-bot-2`');
+
+    const withoutPeers = await buildAppendSystemPrompt(
+      platform, 'mm', '/repo', 't1', 'alice', ['alice'], 'STATIC', fakeStore({}),
+    );
+    expect(withoutPeers).not.toContain('## Other assistants in this thread');
+  });
+
   it('still teaches the "Collaborators updated" convention in solo sessions', async () => {
     const platform = fakePlatform({});
     const prompt = await buildAppendSystemPrompt(

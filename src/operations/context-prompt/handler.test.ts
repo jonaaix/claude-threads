@@ -8,6 +8,10 @@ import {
   getThreadContextCount,
   getThreadMessagesForContext,
   updateContextPromptPost,
+  computeMissedDelta,
+  formatMissedMessagesForClaude,
+  DELTA_MSG_CAP,
+  DELTA_TRUNC,
 } from './handler.js';
 import type { ThreadMessage, PlatformClient, PlatformPost } from '../../platform/index.js';
 import type { Session } from '../../session/types.js';
@@ -483,4 +487,79 @@ describe('context-prompt', () => {
     });
   });
 
+  describe('computeMissedDelta (multi-bot handoff)', () => {
+    const msg = (id: string, username: string, message = `m-${id}`): ThreadMessage => ({
+      id, userId: `u-${username}`, username, message, createAt: 0,
+    });
+    const history: ThreadMessage[] = [
+      msg('1', 'alice'),
+      msg('2', 'bot1'),
+      msg('3', 'alice'),
+      msg('4', 'bot1'),
+      msg('5', 'alice'), // the triggering @mention
+    ];
+
+    it('returns messages after lastSeenPostId, excluding trigger and own posts', () => {
+      // bot2 last saw post '2'; trigger is '5'; bot2's own posts filtered out.
+      const delta = computeMissedDelta(history, '2', 'bot2', '5');
+      expect(delta.map(m => m.id)).toEqual(['3', '4']);
+    });
+
+    it('drops THIS bot\'s own posts from the delta', () => {
+      // From bot1's perspective, its own posts ('2','4') are already in context.
+      const delta = computeMissedDelta(history, '1', 'bot1', '5');
+      expect(delta.map(m => m.id)).toEqual(['3']);
+    });
+
+    it('treats an undefined marker as the whole window (minus trigger/own)', () => {
+      const delta = computeMissedDelta(history, undefined, 'bot2', '5');
+      expect(delta.map(m => m.id)).toEqual(['1', '2', '3', '4']);
+    });
+
+    it('treats a trimmed-out marker as the whole window', () => {
+      const delta = computeMissedDelta(history, 'no-such-id', 'bot2', '5');
+      expect(delta.map(m => m.id)).toEqual(['1', '2', '3', '4']);
+    });
+
+    it('returns empty when nothing was missed (marker is the newest post)', () => {
+      const delta = computeMissedDelta(history, '4', 'bot2', '5');
+      expect(delta).toEqual([]);
+    });
+
+    it('caps to the newest `cap` messages', () => {
+      const big: ThreadMessage[] = Array.from({ length: DELTA_MSG_CAP + 10 }, (_, i) =>
+        msg(String(i + 1), 'alice')
+      );
+      const delta = computeMissedDelta(big, undefined, 'bot2', 'none');
+      expect(delta.length).toBe(DELTA_MSG_CAP);
+      // Keeps the newest, drops the oldest.
+      expect(delta[delta.length - 1].id).toBe(String(DELTA_MSG_CAP + 10));
+      expect(delta[0].id).toBe(String(11));
+    });
+  });
+
+  describe('formatMissedMessagesForClaude', () => {
+    const msg = (username: string, message: string): ThreadMessage => ({
+      id: `${username}-${message.slice(0, 4)}`, userId: `u-${username}`, username, message, createAt: 0,
+    });
+
+    it('returns empty string for no messages', () => {
+      expect(formatMissedMessagesForClaude([])).toBe('');
+    });
+
+    it('attributes each line and includes a header + current-request trailer', () => {
+      const out = formatMissedMessagesForClaude([msg('alice', 'hi'), msg('bot1', 'the config is X')]);
+      expect(out).toContain('Messages you missed');
+      expect(out).toContain('@alice: hi');
+      expect(out).toContain('@bot1: the config is X'); // peer bot messages are included
+      expect(out).toContain('[Current request:]');
+    });
+
+    it('truncates a very long single message to DELTA_TRUNC', () => {
+      const long = 'x'.repeat(DELTA_TRUNC + 100);
+      const out = formatMissedMessagesForClaude([msg('alice', long)]);
+      expect(out).toContain('x'.repeat(DELTA_TRUNC) + '…');
+      expect(out).not.toContain('x'.repeat(DELTA_TRUNC + 1));
+    });
+  });
 });

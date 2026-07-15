@@ -51,9 +51,31 @@ function createMockSessionManager() {
     registry: {
       getActiveThreadIds: mockGetActiveThreadIds,
       findByThreadId: mockFindByThreadId,
+      // handleMessage now looks sessions up per-platform via find(); delegate to
+      // the same underlying mock so existing findByThreadId.mockReturnValue(...)
+      // setups drive both.
+      find: mock((_platformId: string, _threadId: string) => mockFindByThreadId()),
       getPersistedByThreadId: mockGetPersistedByThreadId,
+      // Default: no other bot has a session in the thread.
+      hasSessionInThreadExcept: mock(() => false),
     },
     getPersistedSession: mock(() => undefined),
+    // Multi-bot addressing helpers (default: single-bot, no baton set).
+    otherBotMentioned: mock(() => false),
+    isBotUsername: mock(() => false),
+    getActiveBotForThread: mock(() => undefined),
+    // Explicit baton ("Stab") helpers. Default: no bot @mentioned, baton unset,
+    // no seed — so the gate falls through and single-bot behavior is preserved.
+    resolveMentionedBot: mock(() => undefined as string | undefined),
+    getBatonHolder: mock(() => undefined as string | undefined),
+    transferBaton: mock(() => {}),
+    seedBatonFromFloor: mock(() => undefined as string | undefined),
+    peerBotsPresent: mock(() => false),
+    isBotProcessingInThread: mock(() => false),
+    noteUserActivity: mock(() => {}),
+    botHandoffLimitReached: mock(() => false),
+    getMaxBotHandoffs: mock(() => 25),
+    getBotHops: mock(() => 0),
     killAllSessions: mock(async () => {}),
     cancelSession: mock(async () => {}),
     interruptSession: mock(async () => {}),
@@ -373,7 +395,58 @@ describe('handleMessage', () => {
 
       await handleMessage(client, session, post, user, options);
 
-      expect(session.sendFollowUp).toHaveBeenCalledWith('thread1', 'please help me with this code', undefined, 'allowed-user', 'User');
+      expect(session.sendFollowUp).toHaveBeenCalledWith('thread1', 'please help me with this code', undefined, 'allowed-user', 'User', { triggeringPostId: 'post1', platformId: 'test-platform' });
+    });
+
+    test('a bare "stop" interrupts the current answer (kill switch), does not follow up', async () => {
+      const post: PlatformPost = {
+        id: 'post1', platformId: 'test', channelId: 'channel1', userId: 'user1',
+        message: 'stop', rootId: 'thread1', createAt: Date.now(),
+      };
+      const user: PlatformUser = { id: 'user1', username: 'allowed-user', displayName: 'User' };
+
+      await handleMessage(client, session, post, user, options);
+
+      expect(session.interruptSession).toHaveBeenCalledWith('thread1', 'allowed-user', 'test-platform');
+      expect(session.sendFollowUp).not.toHaveBeenCalled();
+    });
+
+    test('"stop" is case-insensitive and accepts the German "stopp"', async () => {
+      const mk = (m: string): PlatformPost => ({
+        id: 'p', platformId: 'test', channelId: 'channel1', userId: 'user1', message: m, rootId: 'thread1', createAt: Date.now(),
+      });
+      const user: PlatformUser = { id: 'user1', username: 'allowed-user', displayName: 'User' };
+
+      await handleMessage(client, session, mk('  STOP '), user, options);
+      await handleMessage(client, session, mk('Stopp'), user, options);
+
+      expect(session.interruptSession).toHaveBeenCalledTimes(2);
+    });
+
+    test('"stop" as part of a longer message is NOT the kill switch (sends follow-up)', async () => {
+      const post: PlatformPost = {
+        id: 'post1', platformId: 'test', channelId: 'channel1', userId: 'user1',
+        message: 'stop using tabs and use spaces', rootId: 'thread1', createAt: Date.now(),
+      };
+      const user: PlatformUser = { id: 'user1', username: 'allowed-user', displayName: 'User' };
+
+      await handleMessage(client, session, post, user, options);
+
+      expect(session.interruptSession).not.toHaveBeenCalled();
+      expect(session.sendFollowUp).toHaveBeenCalled();
+    });
+
+    test('"stop" from an unauthorized user does not interrupt', async () => {
+      (session.isUserAllowedInSession as any).mockReturnValue(false);
+      const post: PlatformPost = {
+        id: 'post1', platformId: 'test', channelId: 'channel1', userId: 'user1',
+        message: 'stop', rootId: 'thread1', createAt: Date.now(),
+      };
+      const user: PlatformUser = { id: 'user1', username: 'outsider', displayName: 'Outsider' };
+
+      await handleMessage(client, session, post, user, options);
+
+      expect(session.interruptSession).not.toHaveBeenCalled();
     });
 
     test('requests approval for unauthorized user', async () => {
@@ -476,7 +549,7 @@ describe('handleMessage', () => {
 
       await handleMessage(client, session, post, user, options);
 
-      expect(session.sendFollowUp).toHaveBeenCalledWith('thread1', 'please continue', undefined, 'allowed-user', 'User');
+      expect(session.sendFollowUp).toHaveBeenCalledWith('thread1', 'please continue', undefined, 'allowed-user', 'User', { triggeringPostId: 'post1', platformId: 'test-platform' });
     });
 
     test('when quiet mode off (default), responds to a non-mention reply', async () => {
@@ -498,7 +571,7 @@ describe('handleMessage', () => {
 
       await handleMessage(client, session, post, user, options);
 
-      expect(session.sendFollowUp).toHaveBeenCalledWith('thread1', 'keep going please', undefined, 'allowed-user', 'User');
+      expect(session.sendFollowUp).toHaveBeenCalledWith('thread1', 'keep going please', undefined, 'allowed-user', 'User', { triggeringPostId: 'post1', platformId: 'test-platform' });
     });
 
     test('when quiet mode on, a pending worktree-prompt reply is still handled (bypasses the gate)', async () => {
@@ -558,8 +631,10 @@ describe('handleMessage', () => {
 
   describe('paused session', () => {
     beforeEach(() => {
-      // Configure registry to return a persisted session (paused session exists)
-      (session.registry.getPersistedByThreadId as any).mockReturnValue({ sessionAllowedUsers: ['allowed-user'] });
+      // Configure registry to return a persisted session (paused session exists).
+      // platformId must match options.platformId — handleMessage now only treats
+      // a paused session as resumable from its own platform.
+      (session.registry.getPersistedByThreadId as any).mockReturnValue({ platformId: 'test-platform', sessionAllowedUsers: ['allowed-user'] });
       (session.getPersistedSession as any).mockReturnValue({
         sessionAllowedUsers: ['allowed-user'],
       });
@@ -1415,7 +1490,7 @@ describe('handleMessage', () => {
 
       await handleMessage(client, session, post, user, options);
 
-      expect(session.sendFollowUp).toHaveBeenCalledWith('thread1', '/context', undefined, undefined, undefined, { system: true });
+      expect(session.sendFollowUp).toHaveBeenCalledWith('thread1', '/context', undefined, undefined, undefined, { system: true, platformId: 'test-platform' });
     });
 
     test('handles !cost command', async () => {
@@ -1432,7 +1507,7 @@ describe('handleMessage', () => {
 
       await handleMessage(client, session, post, user, options);
 
-      expect(session.sendFollowUp).toHaveBeenCalledWith('thread1', '/cost', undefined, undefined, undefined, { system: true });
+      expect(session.sendFollowUp).toHaveBeenCalledWith('thread1', '/cost', undefined, undefined, undefined, { system: true, platformId: 'test-platform' });
     });
 
     test('handles !compact command', async () => {
@@ -1449,7 +1524,7 @@ describe('handleMessage', () => {
 
       await handleMessage(client, session, post, user, options);
 
-      expect(session.sendFollowUp).toHaveBeenCalledWith('thread1', '/compact', undefined, undefined, undefined, { system: true });
+      expect(session.sendFollowUp).toHaveBeenCalledWith('thread1', '/compact', undefined, undefined, undefined, { system: true, platformId: 'test-platform' });
     });
 
     test('does not send slash commands for unauthorized user', async () => {
@@ -1491,7 +1566,7 @@ describe('handleMessage', () => {
 
       await handleMessage(client, session, post, user, options);
 
-      expect(session.sendFollowUp).toHaveBeenCalledWith('thread1', '/review', undefined, undefined, undefined, { system: true });
+      expect(session.sendFollowUp).toHaveBeenCalledWith('thread1', '/review', undefined, undefined, undefined, { system: true, platformId: 'test-platform' });
     });
 
     test('handles dynamic slash commands with arguments', async () => {
@@ -1513,7 +1588,7 @@ describe('handleMessage', () => {
 
       await handleMessage(client, session, post, user, options);
 
-      expect(session.sendFollowUp).toHaveBeenCalledWith('thread1', '/review --detailed', undefined, undefined, undefined, { system: true });
+      expect(session.sendFollowUp).toHaveBeenCalledWith('thread1', '/review --detailed', undefined, undefined, undefined, { system: true, platformId: 'test-platform' });
     });
 
     test('does not pass through unknown commands', async () => {
@@ -1897,7 +1972,7 @@ describe('handleMessage', () => {
 
       expect(session.handleWorktreeBranchResponse).toHaveBeenCalled();
       // Should fall through to sendFollowUp
-      expect(session.sendFollowUp).toHaveBeenCalledWith('thread1', 'not a valid branch response', undefined, 'allowed-user', 'User');
+      expect(session.sendFollowUp).toHaveBeenCalledWith('thread1', 'not a valid branch response', undefined, 'allowed-user', 'User', { triggeringPostId: 'post1', platformId: 'test-platform' });
     });
 
     test('does not handle branch response for unauthorized user', async () => {
@@ -1918,6 +1993,258 @@ describe('handleMessage', () => {
 
       expect(session.handleWorktreeBranchResponse).not.toHaveBeenCalled();
       expect(session.requestMessageApproval).toHaveBeenCalled();
+    });
+  });
+
+  describe('multi-bot channel (platform-scoped lookup)', () => {
+    // Regression: with two bots in one channel, an unscoped findByThreadId let
+    // bot B's platform resolve bot A's session and relay A's posts back into it
+    // → infinite self-reply loop. Sessions must be looked up per-platform.
+    test('does not treat another platform\'s session as this platform\'s follow-up', async () => {
+      // Simulate the unscoped view returning A's session, but the scoped find()
+      // only matches on platform 'A'. This message arrives on 'platform-B'.
+      (session.registry.findByThreadId as any).mockReturnValue({ sessionId: 'platform-A:thread1', platformId: 'platform-A' });
+      (session.registry.find as any).mockImplementation((pid: string) =>
+        pid === 'platform-A' ? { sessionId: 'platform-A:thread1', platformId: 'platform-A' } : undefined,
+      );
+
+      const post: PlatformPost = {
+        id: 'postX',
+        platformId: 'platform-B',
+        channelId: 'channel1',
+        userId: 'bot-a',
+        message: 'a bot reply that must not be relayed',
+        rootId: 'thread1',
+        createAt: Date.now(),
+      };
+      const user: PlatformUser = { id: 'bot-a', username: 'peer-bot-2' };
+
+      await handleMessage(client, session, post, user, { platformId: 'platform-B' });
+
+      // B has no session in this thread → no follow-up, and (no @mention of B) no new session.
+      expect(session.sendFollowUp).not.toHaveBeenCalled();
+      expect(session.startSession).not.toHaveBeenCalled();
+    });
+
+    test('processes the follow-up when the session belongs to this platform', async () => {
+      (session.registry.find as any).mockImplementation((pid: string) =>
+        pid === 'test-platform' ? { sessionId: 'test-platform:thread1', platformId: 'test-platform' } : undefined,
+      );
+      (session.isUserAllowedInSession as any).mockReturnValue(true);
+
+      const post: PlatformPost = {
+        id: 'postY',
+        platformId: 'test-platform',
+        channelId: 'channel1',
+        userId: 'user1',
+        message: 'a normal follow-up',
+        rootId: 'thread1',
+        createAt: Date.now(),
+      };
+      const user: PlatformUser = { id: 'user1', username: 'alice', displayName: 'Alice' };
+
+      await handleMessage(client, session, post, user, { platformId: 'test-platform' });
+
+      expect(session.sendFollowUp).toHaveBeenCalled();
+    });
+  });
+
+  describe('multi-bot baton ("Stab") rules', () => {
+    const mkPost = (message: string, _username = 'allowed-user', userId = 'u1'): PlatformPost => ({
+      id: 'p', platformId: 'test-platform', channelId: 'channel1', userId, message, rootId: 'thread1', createAt: Date.now(),
+    });
+    const ownSession = { sessionId: 'test-platform:thread1', platformId: 'test-platform' };
+
+    test('ignores a plain (non-@mention) message authored by another bot — breaks the A↔B loop', async () => {
+      (session.isBotUsername as any).mockImplementation((u: string) => u === 'peer-bot-2');
+      (session.registry.find as any).mockReturnValue(ownSession);
+
+      await handleMessage(client, session, mkPost('here is my analysis', 'peer-bot-2', 'bot-b'), { id: 'bot-b', username: 'peer-bot-2' }, options);
+
+      expect(session.sendFollowUp).not.toHaveBeenCalled();
+    });
+
+    test('stays silent when a PEER bot is @mentioned, and transfers the baton to it at mention time', async () => {
+      (session.resolveMentionedBot as any).mockReturnValue('other-platform');
+      (session.registry.find as any).mockReturnValue(ownSession);
+
+      await handleMessage(client, session, mkPost('@peer-bot-2 please take over'), { id: 'u1', username: 'allowed-user' }, options);
+
+      // Baton moves the moment the peer is @mentioned, regardless of author.
+      expect(session.transferBaton).toHaveBeenCalledWith('thread1', 'other-platform', { byBot: false });
+      expect(session.sendFollowUp).not.toHaveBeenCalled();
+      expect(session.startSession).not.toHaveBeenCalled();
+    });
+
+    test('a bot handing off to a peer (@peer, authored by another bot) still transfers the baton', async () => {
+      // bot1 writes "@peer-bot-2 ..." — authored by a bot but @mentions a peer.
+      // The mention branch runs BEFORE the bot-author loop guard, so the baton
+      // still transfers (this is the intended bot→bot handoff).
+      (session.isBotUsername as any).mockImplementation((u: string) => u === 'peer-bot-1');
+      (session.resolveMentionedBot as any).mockReturnValue('other-platform');
+      (session.registry.find as any).mockReturnValue(ownSession);
+
+      await handleMessage(client, session, mkPost('@peer-bot-2 what does prod use?', 'peer-bot-1', 'bot-a'), { id: 'bot-a', username: 'peer-bot-1' }, options);
+
+      expect(session.transferBaton).toHaveBeenCalledWith('thread1', 'other-platform', { byBot: true });
+      expect(session.sendFollowUp).not.toHaveBeenCalled();
+    });
+
+    test('stays silent on a plain follow-up when another bot holds the baton', async () => {
+      (session.getBatonHolder as any).mockReturnValue('other-platform');
+      (session.registry.find as any).mockReturnValue(ownSession);
+
+      await handleMessage(client, session, mkPost('a normal follow-up'), { id: 'u1', username: 'allowed-user' }, options);
+
+      expect(session.sendFollowUp).not.toHaveBeenCalled();
+    });
+
+    test('answers a plain follow-up when THIS bot holds the baton', async () => {
+      (session.getBatonHolder as any).mockReturnValue('test-platform');
+      (session.registry.find as any).mockReturnValue(ownSession);
+      (session.isUserAllowedInSession as any).mockReturnValue(true);
+
+      await handleMessage(client, session, mkPost('a normal follow-up'), { id: 'u1', username: 'allowed-user' }, options);
+
+      expect(session.sendFollowUp).toHaveBeenCalled();
+    });
+
+    test('seeds the baton from the legacy floor when no explicit holder exists yet', async () => {
+      // Pre-coordinator thread: getBatonHolder undefined → seedBatonFromFloor
+      // supplies the holder. Here it resolves to this bot → we answer.
+      (session.getBatonHolder as any).mockReturnValue(undefined);
+      (session.seedBatonFromFloor as any).mockReturnValue('test-platform');
+      (session.registry.find as any).mockReturnValue(ownSession);
+      (session.isUserAllowedInSession as any).mockReturnValue(true);
+
+      await handleMessage(client, session, mkPost('a normal follow-up'), { id: 'u1', username: 'allowed-user' }, options);
+
+      expect(session.seedBatonFromFloor).toHaveBeenCalledWith('thread1');
+      expect(session.sendFollowUp).toHaveBeenCalled();
+    });
+
+    test('stays silent on a plain follow-up when the baton is unknown but another bot shares the thread', async () => {
+      // Safety net: baton unset AND seed yields nothing (e.g. mid-startup) with
+      // two bots in the thread → require a fresh @mention to disambiguate.
+      (session.getBatonHolder as any).mockReturnValue(undefined);
+      (session.seedBatonFromFloor as any).mockReturnValue(undefined);
+      (session.registry.hasSessionInThreadExcept as any).mockReturnValue(true);
+      (session.registry.find as any).mockReturnValue(ownSession);
+
+      await handleMessage(client, session, mkPost('a normal follow-up'), { id: 'u1', username: 'allowed-user' }, options);
+
+      expect(session.sendFollowUp).not.toHaveBeenCalled();
+    });
+
+    test('an @mention of THIS bot transfers the baton to it and is processed', async () => {
+      // The baton is claimed at mention time (not derived from who last answered).
+      (session.resolveMentionedBot as any).mockReturnValue('test-platform');
+      (session.getBatonHolder as any).mockReturnValue('other-platform'); // another bot had it
+      (session.registry.find as any).mockReturnValue(ownSession);
+      (session.isUserAllowedInSession as any).mockReturnValue(true);
+
+      await handleMessage(client, session, mkPost('@claude-bot hello again'), { id: 'u1', username: 'allowed-user' }, options);
+
+      expect(session.transferBaton).toHaveBeenCalledWith('thread1', 'test-platform', { byBot: false });
+      expect(session.sendFollowUp).toHaveBeenCalled();
+    });
+
+    test('ignores a message this bot authored itself (self-echo guard)', async () => {
+      // A bot's own post must never re-enter its own session (derails the turn).
+      (session.registry.find as any).mockReturnValue(ownSession);
+      (session.isUserAllowedInSession as any).mockReturnValue(true);
+
+      // 'claude-bot' is this mock client's own botName.
+      await handleMessage(client, session, mkPost('some answer', 'claude-bot', 'self'), { id: 'self', username: 'claude-bot' }, options);
+
+      expect(session.sendFollowUp).not.toHaveBeenCalled();
+      expect(session.transferBaton).not.toHaveBeenCalled();
+    });
+
+    test('defers a handoff @mention emitted by a peer bot that is still mid-turn (turn-gate)', async () => {
+      // peer bot "claude_peer" is @mentioning THIS bot but is still processing →
+      // not a settled handoff yet. Do not transfer the baton, do not pick up.
+      (session.resolveMentionedBot as any).mockReturnValue('test-platform'); // mentions me
+      (session.isBotUsername as any).mockImplementation((u: string) => u === 'claude_peer');
+      (session.isBotProcessingInThread as any).mockReturnValue(true);
+      (session.registry.find as any).mockReturnValue(ownSession);
+      (session.isUserAllowedInSession as any).mockReturnValue(true);
+
+      await handleMessage(client, session, mkPost('@claude-bot here, let me check first', 'claude_peer', 'peer'), { id: 'peer', username: 'claude_peer' }, options);
+
+      expect(session.transferBaton).not.toHaveBeenCalled();
+      expect(session.sendFollowUp).not.toHaveBeenCalled();
+    });
+
+    test('accepts the handoff once the peer bot has finished its turn', async () => {
+      // Same as above but the author is no longer processing → real handoff.
+      (session.resolveMentionedBot as any).mockReturnValue('test-platform');
+      (session.isBotUsername as any).mockImplementation((u: string) => u === 'claude_peer');
+      (session.isBotProcessingInThread as any).mockReturnValue(false);
+      (session.registry.find as any).mockReturnValue(ownSession);
+      (session.isUserAllowedInSession as any).mockReturnValue(true);
+
+      await handleMessage(client, session, mkPost('@claude-bot here is my assessment: …', 'claude_peer', 'peer'), { id: 'peer', username: 'claude_peer' }, options);
+
+      expect(session.transferBaton).toHaveBeenCalledWith('thread1', 'test-platform', { byBot: true });
+      expect(session.sendFollowUp).toHaveBeenCalled();
+    });
+
+    test('pauses the exchange and posts a notice when the bot-to-bot cap is reached', async () => {
+      (session.resolveMentionedBot as any).mockReturnValue('test-platform'); // addressed to me
+      (session.isBotUsername as any).mockImplementation((u: string) => u === 'claude_peer');
+      (session.isBotProcessingInThread as any).mockReturnValue(false);
+      (session.botHandoffLimitReached as any).mockReturnValue(true);
+      (session.registry.find as any).mockReturnValue(ownSession);
+      (session.isUserAllowedInSession as any).mockReturnValue(true);
+
+      await handleMessage(client, session, mkPost('@claude-bot one more round', 'claude_peer', 'peer'), { id: 'peer', username: 'claude_peer' }, options);
+
+      expect(session.transferBaton).not.toHaveBeenCalled();
+      expect(session.sendFollowUp).not.toHaveBeenCalled();
+      const posted = [...client.posts.values()].join(' ').toLowerCase();
+      expect(posted).toContain('paused');
+    });
+
+    test('the cap does NOT apply to a human handoff (only bot→bot counts)', async () => {
+      (session.resolveMentionedBot as any).mockReturnValue('test-platform');
+      (session.botHandoffLimitReached as any).mockReturnValue(true); // even at the cap…
+      (session.registry.find as any).mockReturnValue(ownSession);
+      (session.isUserAllowedInSession as any).mockReturnValue(true);
+
+      // …a human @mention still goes through (byBot=false skips the cap check).
+      await handleMessage(client, session, mkPost('@claude-bot keep going'), { id: 'u1', username: 'allowed-user' }, options);
+
+      expect(session.transferBaton).toHaveBeenCalledWith('thread1', 'test-platform', { byBot: false });
+    });
+
+    test('a human message resets the bot-to-bot loop budget', async () => {
+      (session.getBatonHolder as any).mockReturnValue('test-platform');
+      (session.registry.find as any).mockReturnValue(ownSession);
+      (session.isUserAllowedInSession as any).mockReturnValue(true);
+
+      await handleMessage(client, session, mkPost('a normal follow-up'), { id: 'u1', username: 'allowed-user' }, options);
+
+      expect(session.noteUserActivity).toHaveBeenCalledWith('thread1');
+    });
+
+    test('a bot-authored message does NOT reset the loop budget', async () => {
+      (session.isBotUsername as any).mockImplementation((u: string) => u === 'claude_peer');
+      (session.registry.find as any).mockReturnValue(ownSession);
+
+      await handleMessage(client, session, mkPost('plain bot chatter', 'claude_peer', 'peer'), { id: 'peer', username: 'claude_peer' }, options);
+
+      expect(session.noteUserActivity).not.toHaveBeenCalled();
+    });
+
+    test('passes the triggering post id to sendFollowUp (for delta-context)', async () => {
+      (session.getBatonHolder as any).mockReturnValue('test-platform');
+      (session.registry.find as any).mockReturnValue(ownSession);
+      (session.isUserAllowedInSession as any).mockReturnValue(true);
+
+      await handleMessage(client, session, mkPost('a normal follow-up'), { id: 'u1', username: 'allowed-user' }, options);
+
+      expect(session.sendFollowUp).toHaveBeenCalledWith('thread1', 'a normal follow-up', undefined, 'allowed-user', undefined, { triggeringPostId: 'p', platformId: 'test-platform' });
     });
   });
 });

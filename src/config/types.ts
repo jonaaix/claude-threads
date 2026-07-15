@@ -197,6 +197,15 @@ export interface Config {
    * resumed sessions — each session persists its own value.
    */
   respondOnlyWhenMentioned?: boolean;
+  /**
+   * Max number of CONSECUTIVE bot-to-bot handoffs allowed before the exchange
+   * pauses and control returns to the user. Counts @mention handoffs between
+   * bots since the last human message (which resets it), so bots can hold a long
+   * multi-round discussion (e.g. gathering opinions on a big feature) without
+   * running away forever / burning tokens. Default `DEFAULT_MAX_BOT_HANDOFFS`.
+   * Set to `0` to disable the cap entirely (unlimited — use with care).
+   */
+  maxBotHandoffs?: number;
   keepAlive?: boolean; // Optional, defaults to true when undefined
   autoUpdate?: Partial<AutoUpdateConfig>; // Optional auto-update configuration
   threadLogs?: ThreadLogsConfig; // Optional thread logging configuration
@@ -207,10 +216,70 @@ export interface Config {
   platforms: PlatformInstanceConfig[];
 }
 
+/**
+ * Which agent backend a platform's sessions run on.
+ * - `claude`  — the Claude Code CLI (default; historical behavior).
+ * - `opencode` — the opencode client/server agent (`@opencode-ai/sdk`).
+ *
+ * Chosen per-platform so one bot/channel maps to exactly one backend. Persisted
+ * per-session so a session keeps its backend across resume.
+ */
+/**
+ * Default cap on consecutive bot-to-bot handoffs per user impulse (see
+ * `Config.maxBotHandoffs`). Generous so multi-bot design discussions can run
+ * for many rounds, while still bounding a runaway loop. Reset by any human msg.
+ */
+export const DEFAULT_MAX_BOT_HANDOFFS = 25;
+
+export type AgentBackendKind = 'claude' | 'opencode';
+
+export const AGENT_BACKEND_VALUES: readonly AgentBackendKind[] = ['claude', 'opencode'] as const;
+
+/** Default when a platform omits `agent` — keeps every existing config on Claude. */
+export const DEFAULT_AGENT_BACKEND: AgentBackendKind = 'claude';
+
+export function isAgentBackendKind(value: unknown): value is AgentBackendKind {
+  return typeof value === 'string' && (AGENT_BACKEND_VALUES as readonly string[]).includes(value);
+}
+
+/**
+ * Normalize a per-platform `agent` field. Undefined → default (`claude`).
+ * Throws on any other value so config typos surface at startup instead of
+ * silently falling back to Claude.
+ */
+export function resolveAgentBackend(value: unknown, fieldPath: string): AgentBackendKind {
+  if (value === undefined || value === null) return DEFAULT_AGENT_BACKEND;
+  if (isAgentBackendKind(value)) return value;
+  throw new Error(
+    `Invalid ${fieldPath}: expected one of ${AGENT_BACKEND_VALUES.join(', ')}, got ${JSON.stringify(value)}`,
+  );
+}
+
 export interface PlatformInstanceConfig {
   id: string;
   type: 'mattermost' | 'slack';
   displayName: string;
+  /**
+   * Agent backend for this platform's sessions. Default `'claude'`. See
+   * `AgentBackendKind`. opencode uses its own separate auth/model config on the
+   * host (`opencode auth login` / opencode.json); claude-threads only selects
+   * which backend to spawn.
+   */
+  agent?: AgentBackendKind;
+  /**
+   * Model override for this platform's sessions. For the Claude backend it's
+   * passed as `--model` (e.g. "sonnet", "opus", or a full model id). Undefined
+   * lets the backend use its own default. (opencode uses its own config/model.)
+   */
+  model?: string;
+  /**
+   * Short, human-readable specialization for this bot (e.g. "Mixpanel &
+   * product analytics" or "infra & deploys"). When peer bots share a channel,
+   * each peer's description is injected into the others' system prompt so a bot
+   * knows WHEN to hand off to which peer. Undefined → the peer is listed by name
+   * only. Purely advisory: it shapes the handoff guidance, nothing else.
+   */
+  description?: string;
   /**
    * Per-thread session header visibility. Default `'full'`.
    * `'minimal'` keeps only the one-line status bar; `'hidden'` skips the

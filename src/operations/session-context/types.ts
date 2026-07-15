@@ -18,8 +18,9 @@ import type { SessionStore } from '../../persistence/session-store.js';
 import type { GitHubEmailsStore } from '../../persistence/github-emails-store.js';
 import type { SessionInfo } from '../../ui/types.js';
 import type { BuiltMessageContent } from '../streaming/handler.js';
-import type { ClaudeAccount, PermissionMode, PlatformOverhead } from '../../config/index.js';
+import type { ClaudeAccount, PermissionMode, PlatformOverhead, AgentBackendKind } from '../../config/index.js';
 import type { AccountPoolStatus } from '../../claude/account-pool.js';
+import type { PeerBotInfo } from '../../commands/system-prompt-generator.js';
 
 // =============================================================================
 // Configuration (read-only state)
@@ -293,6 +294,30 @@ export interface SessionOperations {
    * explicit settings.
    */
   getPlatformOverhead(platformId: string): PlatformOverhead;
+
+  /**
+   * Which agent backend (`claude` | `opencode`) this platform's sessions run
+   * on. Defaults to `claude` for platforms registered without an explicit
+   * `agent` setting. Read at session start to pick the backend.
+   */
+  getPlatformAgent(platformId: string): AgentBackendKind;
+
+  /** Model override for this platform (Claude `--model`), or undefined for default. */
+  getPlatformModel(platformId: string): string | undefined;
+
+  /**
+   * Bot names of other platforms sharing this platform's channel — the peers a
+   * session's bot can hand off to via `@name`. Injected into the system prompt.
+   * Empty when no other bot shares the channel.
+   */
+  getPeerBotNames(platformId: string): string[];
+
+  /**
+   * Peer bots (name + optional specialization) sharing this platform's channel.
+   * Injected into the system prompt so a bot knows which peer to hand off to and
+   * when. Empty when no other bot shares the channel.
+   */
+  getPeerBots(platformId: string): PeerBotInfo[];
 }
 
 // =============================================================================

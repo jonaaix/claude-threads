@@ -173,6 +173,49 @@ export function formatCollaboratorListForChat(collaborators: ResolvedCollaborato
   return collaborators.map(c => `${c.name} <${c.email}>`).join(', ');
 }
 
+/** A peer bot the current bot can hand off to, with its optional specialization. */
+export interface PeerBotInfo {
+  name: string;
+  description?: string;
+}
+
+/**
+ * Build the "other assistants in this thread" section — only when peer bots
+ * share the channel. Teaches the bot that other assistants exist, WHAT each is
+ * specialized in (so it can decide when to consult which peer), and how to hand
+ * off: strictly `@name` (no space), the only form our mention detection (and
+ * Mattermost/Slack) recognizes. Reinforces that a reply without an `@name` is
+ * for the user, so bots don't chatter at each other.
+ */
+export function buildPeerBotContext(peerBots: PeerBotInfo[]): string {
+  if (peerBots.length === 0) return '';
+  // List each peer with its specialization when known, so the bot can judge
+  // WHEN to hand off to WHICH peer.
+  const list = peerBots
+    .map(p => (p.description ? `- \`@${p.name}\` — ${p.description}` : `- \`@${p.name}\``))
+    .join('\n');
+  const example = peerBots[0].name;
+  return `## Other assistants in this thread
+
+Other AI assistants share this thread and can be brought in:
+${list}
+
+**How to hand off to one of them — read carefully:**
+- Write its name as **plain text** \`@${example}\` — nothing around it. This EXACT literal form is the only thing that reaches it.
+- Do NOT bold it, italicize it, put it in code/backticks, or add a space after \`@\`. All of these FAIL to notify:
+  - ✅ \`@${example}\`
+  - ❌ \`**@${example}**\`  ❌ \`\`@${example}\`\`  ❌ \`@ ${example}\`
+- **Hand off when it genuinely helps.** When another assistant's specialty (listed above) fits the task better than yours, consult it — you do NOT need the user's explicit permission first. Keep the exchange going only as long as required to clarify or resolve the task; each turn should add something concrete (a new point, a counter-argument, an answer). Don't hand off just to greet, acknowledge, or say "your turn", and don't turn it into idle chat. As soon as the question is resolved or there's nothing substantive left to add, address the USER directly (a reply with no \`@name\`) instead of pinging the peer again.
+- **Do your own work FIRST, hand off LAST.** Finish everything you can on your side — read files, run tools, think — BEFORE you @mention a peer. The @mention must be your **final action of the turn**: writing it hands control to the peer, so anything you still needed to do won't happen. Never post a "let me check first, @peer" style acknowledgement that mentions a peer while you still intend to keep working — that gives away control prematurely and cuts your own answer short. If you need to look something up before consulting a peer, look it up first, THEN send one @mention message.
+- **Make the ask self-contained.** The other assistant does NOT automatically see this conversation. When you hand off, state the question and include the specific facts, file paths, or values it needs to answer. Do NOT say "see above" or "as discussed" — it cannot see them.
+
+**Who your reply goes to:**
+- A reply that contains a plain \`@name\` goes to THAT assistant.
+- A reply WITHOUT any \`@name\` goes to the USER — never to another assistant. So a normal answer never starts a bot-to-bot loop.
+- **Returning an answer to an assistant who asked you:** if another assistant \`@mentioned\` you with a question, start your reply with THEIR \`@name\` so your answer goes back to them (and control returns to them). If a human addressed you, reply normally with no \`@name\`.
+- Keep replies about the actual task, not about the mechanics of mentioning each other.`;
+}
+
 /**
  * Compose the full `appendSystemPrompt` for a Claude session.
  *
@@ -201,7 +244,7 @@ export async function buildAppendSystemPrompt(
   allowedUsers: Iterable<string>,
   staticChatPlatformPrompt: string,
   githubEmailsStore: Pick<GitHubEmailsStore, 'get'>,
-  options?: { omitSessionContext?: boolean },
+  options?: { omitSessionContext?: boolean; peerBots?: PeerBotInfo[] },
 ): Promise<string> {
   const collaborators = await resolveCollaborators(
     platform,
@@ -217,6 +260,8 @@ export async function buildAppendSystemPrompt(
     parts.push(buildSessionContext(platform, workingDir, threadId));
   }
   parts.push(staticChatPlatformPrompt);
+  const peerBotSection = buildPeerBotContext(options?.peerBots ?? []);
+  if (peerBotSection) parts.push(peerBotSection);
   parts.push(collaboratorSection);
   return parts.join('\n\n');
 }

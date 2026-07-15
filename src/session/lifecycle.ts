@@ -20,6 +20,8 @@ import { isAuthorizedForSession } from './authorization.js';
 import type { PlatformClient, PlatformFile } from '../platform/index.js';
 import type { ClaudeCliOptions, ClaudeEvent, RateLimitHit } from '../claude/cli.js';
 import { ClaudeCli } from '../claude/cli.js';
+import type { AgentBackend } from '../agent/backend.js';
+import { OpencodeAgent } from '../opencode/agent.js';
 import { cooldownDeadline } from '../claude/rate-limit-detector.js';
 import type { PersistedSession } from '../persistence/session-store.js';
 import { createThreadLogger } from '../persistence/thread-logger.js';
@@ -43,6 +45,9 @@ import { MessageManager, PostTracker } from '../operations/index.js';
 import {
   getThreadMessagesForContext,
   formatContextForClaude,
+  computeMissedDelta,
+  formatMissedMessagesForClaude,
+  DELTA_MSG_CAP,
 } from '../operations/context-prompt/index.js';
 import { formatSideConversationsForClaude } from '../operations/side-conversation/index.js';
 import {
@@ -978,7 +983,12 @@ export async function startSession(
     [username],
     CHAT_PLATFORM_PROMPT,
     ctx.state.githubEmailsStore,
+    { peerBots: ctx.ops.getPeerBots(platformId) },
   );
+
+  // Which agent backend does this platform use? Decides whether we spawn the
+  // Claude CLI or the opencode agent below.
+  const agentBackend = ctx.ops.getPlatformAgent(platformId);
 
   // Create Claude CLI with options
   const platformMcpConfig = platform.getMcpConfig();
@@ -990,7 +1000,12 @@ export async function startSession(
   // drift apart under concurrent acquisitions (which previously left resumed
   // sessions pointing at the wrong account's HOME → "conversation history no
   // longer exists" failure on bot restart).
-  const claudeAccount = ctx.ops.acquireClaudeAccount(undefined, actualThreadId);
+  //
+  // opencode has its own auth/account model outside claude-threads, so we skip
+  // the Claude account pool entirely for opencode-backed sessions.
+  const claudeAccount = agentBackend === 'claude'
+    ? ctx.ops.acquireClaudeAccount(undefined, actualThreadId)
+    : null;
   if (claudeAccount) {
     log.info(`Session ${sessionId.substring(0, 20)} reserved Claude account "${claudeAccount.id}"`);
   }
@@ -1001,6 +1016,7 @@ export async function startSession(
     permissionMode,
     sessionId: claudeSessionId,
     resume: false,
+    model: ctx.ops.getPlatformModel(platformId),
     chrome: ctx.config.chromeEnabled,
     platformConfig: platformMcpConfig,
     appendSystemPrompt: systemPrompt,
@@ -1013,7 +1029,18 @@ export async function startSession(
     outboundFiles: platformMcpConfig.outboundFiles,
     sessionOwnerUsername: username,
   };
-  const claude = new ClaudeCli(cliOptions);
+  // Spawn the selected backend. opencode ignores the Claude-specific
+  // cliOptions (MCP permission tool, account env, statusline) and instead
+  // talks to the shared opencode server; it only needs the working directory
+  // and the appended system prompt.
+  const claude: AgentBackend = agentBackend === 'opencode'
+    ? new OpencodeAgent({
+        workingDir,
+        logSessionId: sessionId,
+        appendSystemPrompt: systemPrompt,
+        title: `claude-threads: ${options.prompt?.slice(0, 60) ?? 'session'}`,
+      })
+    : new ClaudeCli(cliOptions);
 
   // Create the session object
   const session: Session = {
@@ -1023,6 +1050,9 @@ export async function startSession(
     platform,
     claudeSessionId,
     claudeAccountId: claudeAccount?.id,
+    agentBackend,
+    // The @mention that starts a session gives that bot the floor in the thread.
+    lastAddressedAt: Date.now(),
     startedBy: username,
     startedByDisplayName: displayName,
     startedAt: new Date(),
@@ -1106,6 +1136,20 @@ export async function startSession(
     return;
   }
 
+  // opencode creates its session id asynchronously inside start(). Capture it
+  // once ready and persist so a bot restart can resume the same opencode
+  // session. Best-effort: if init failed, whenReady() resolves with no id.
+  if (claude instanceof OpencodeAgent) {
+    const agent = claude;
+    void agent.whenReady().then(() => {
+      const ocId = agent.getOpencodeSessionId();
+      if (ocId && session.opencodeSessionId !== ocId) {
+        session.opencodeSessionId = ocId;
+        ctx.ops.persistSession(session);
+      }
+    });
+  }
+
   // Check if we should prompt for worktree
   // Skip if explicitly disabled (e.g., when branch was specified in initial message via !worktree)
   const shouldPrompt = options.skipWorktreePrompt ? null : await ctx.ops.shouldPromptForWorktree(session);
@@ -1141,6 +1185,31 @@ export async function startSession(
   // twice. Caught by stack-trace diagnostic in PR #340.
   if (replyToPostId) {
     const excludePostId = triggeringPostId || replyToPostId;
+
+    // Multi-bot channel: the user (or a peer bot) may address this bot
+    // mid-thread without composing context. Rather than the interactive
+    // "Last 3/5/10/All" prompt (which a lazy user ignores), automatically seed
+    // the fresh session with the recent thread window — including peer bots'
+    // messages, attributed — and mark them as seen so later handoffs only send
+    // the delta. Single-bot channels keep the interactive prompt below.
+    if (ctx.ops.getPeerBotNames(session.platformId).length > 0) {
+      const history = await session.platform.getThreadHistory(actualThreadId, {
+        limit: DELTA_MSG_CAP,
+        excludeBotMessages: false,
+      });
+      const seed = computeMissedDelta(history, undefined, session.platform.getBotName(), excludePostId);
+      const prompt = seed.length > 0
+        ? formatMissedMessagesForClaude(seed) + '\n' + messageText
+        : messageText;
+      if (history.length > 0) {
+        session.lastSeenPostId = history[history.length - 1].id;
+      }
+      session.messageCount++;
+      claude.sendMessage(prompt);
+      await postSkippedFilesFeedback(session.platform, actualThreadId, skipped);
+      return;
+    }
+
     await ctx.ops.offerContextPrompt(session, messageText, options.files, excludePostId);
     // Either path inside offerContextPrompt sends or queues. Surface any
     // skipped-file warnings and return — the fallback claude.sendMessage()
@@ -1253,7 +1322,13 @@ export async function resumeSession(
     state.sessionAllowedUsers || [state.startedBy],
     CHAT_PLATFORM_PROMPT,
     ctx.state.githubEmailsStore,
+    { peerBots: ctx.ops.getPeerBots(state.platformId) },
   );
+
+  // Which backend did this session run on? Undefined predates opencode support
+  // → 'claude'. opencode resume takes a completely different path (no Claude
+  // account, opencode's own session id) so branch on it here.
+  const resumeAgentBackend = state.agentBackend ?? 'claude';
 
   // Resume MUST re-use the same Claude account the session started on —
   // for OAuth accounts the conversation history lives under that HOME.
@@ -1261,8 +1336,11 @@ export async function resumeSession(
   // threadId is passed as a fallback for legacy sessions persisted before
   // sticky-by-thread binding existed: when state.claudeAccountId is missing,
   // the pool can re-derive the same sticky account from the thread.
-  const claudeAccount = ctx.ops.acquireClaudeAccount(state.claudeAccountId, state.threadId);
-  if (state.claudeAccountId && !claudeAccount) {
+  // opencode sessions never held a Claude account, so skip the pool.
+  const claudeAccount = resumeAgentBackend === 'claude'
+    ? ctx.ops.acquireClaudeAccount(state.claudeAccountId, state.threadId)
+    : null;
+  if (resumeAgentBackend === 'claude' && state.claudeAccountId && !claudeAccount) {
     log.warn(
       `Persisted session referenced Claude account "${state.claudeAccountId}" ` +
       `which is no longer configured — resuming under default env`
@@ -1275,6 +1353,7 @@ export async function resumeSession(
     permissionMode: resumePermissionMode,
     sessionId: state.claudeSessionId,
     resume: true,
+    model: ctx.ops.getPlatformModel(state.platformId),
     chrome: ctx.config.chromeEnabled,
     platformConfig: platformMcpConfig,
     appendSystemPrompt,
@@ -1287,7 +1366,18 @@ export async function resumeSession(
     outboundFiles: platformMcpConfig.outboundFiles,
     sessionOwnerUsername: state.startedBy,
   };
-  const claude = new ClaudeCli(cliOptions);
+  // Resume the opencode session by its own id when we have one; otherwise a
+  // fresh opencode session is created (history from before the restart is
+  // lost — acceptable degradation for the first cut).
+  const claude: AgentBackend = resumeAgentBackend === 'opencode'
+    ? new OpencodeAgent({
+        workingDir: state.workingDir,
+        logSessionId: sessionId,
+        appendSystemPrompt,
+        opencodeSessionId: state.opencodeSessionId,
+        title: state.sessionTitle ?? 'claude-threads session',
+      })
+    : new ClaudeCli(cliOptions);
 
   // Rebuild Session object from persisted state
   const session: Session = {
@@ -1297,6 +1387,12 @@ export async function resumeSession(
     platform,
     claudeSessionId: state.claudeSessionId,
     claudeAccountId: claudeAccount?.id,
+    agentBackend: resumeAgentBackend,
+    opencodeSessionId: state.opencodeSessionId,
+    // Preserve who held the floor so it survives the restart.
+    lastAddressedAt: state.lastAddressedAt,
+    // Preserve the delta boundary so post-restart handoffs don't re-send old messages.
+    lastSeenPostId: state.lastSeenPostId,
     startedBy: state.startedBy,
     startedByDisplayName: state.startedByDisplayName,
     startedAt: new Date(state.startedAt),
@@ -1427,6 +1523,19 @@ export async function resumeSession(
     claude.start();
     sessionLog(session).info(`🔄 Session resumed (@${state.startedBy})`);
 
+    // Persist the (possibly new) opencode session id once ready, so subsequent
+    // restarts resume the same opencode session.
+    if (claude instanceof OpencodeAgent) {
+      const agent = claude;
+      void agent.whenReady().then(() => {
+        const ocId = agent.getOpencodeSessionId();
+        if (ocId && session.opencodeSessionId !== ocId) {
+          session.opencodeSessionId = ocId;
+          ctx.ops.persistSession(session);
+        }
+      });
+    }
+
     // Post or update resume message
     // If we have a lifecyclePostId, this was a timeout/shutdown - update that post
     // Otherwise create a new post (normal for old persisted sessions without lifecyclePostId)
@@ -1499,7 +1608,7 @@ export async function sendFollowUp(
   ctx: SessionContext,
   username?: string,
   displayName?: string,
-  options?: { system?: boolean }
+  options?: { system?: boolean; triggeringPostId?: string }
 ): Promise<void> {
   if (!session.claude.isRunning()) return;
 
@@ -1541,13 +1650,49 @@ export async function sendFollowUp(
     return;
   }
 
-  // Prepend side conversation context if any
+  // Compose the final prompt with prepended context, outermost-first:
+  //   [missed messages] → [side conversations] → [current request]
   let messageToSend = message;
+
+  // Side conversation context if any (@someone-else asides tracked while active).
   if (session.pendingSideConversations && session.pendingSideConversations.length > 0) {
     const sideContext = formatSideConversationsForClaude(session.pendingSideConversations);
-    messageToSend = sideContext + message;
+    messageToSend = sideContext + messageToSend;
     // Clear after use - side conversations are ephemeral
     session.pendingSideConversations = [];
+  }
+
+  // Auto delta-context (multi-bot handoff): catch this bot up on the messages it
+  // MISSED while another bot held the baton — the gate in message-handler
+  // dropped those, so this bot's agent never saw them. No-op in a single-bot
+  // channel and when the bot stayed active (delta is empty). Advances the
+  // last-seen marker to the newest thread post so the same messages are never
+  // re-sent on a later handoff (token-efficient: each message reaches each bot
+  // at most once).
+  if (ctx.ops.getPeerBotNames(session.platformId).length > 0) {
+    try {
+      const history = await session.platform.getThreadHistory(session.threadId, {
+        limit: DELTA_MSG_CAP + 5,
+        excludeBotMessages: false,
+      });
+      const delta = computeMissedDelta(
+        history,
+        session.lastSeenPostId,
+        session.platform.getBotName(),
+        options?.triggeringPostId
+      );
+      if (delta.length > 0) {
+        messageToSend = formatMissedMessagesForClaude(delta) + '\n' + messageToSend;
+      }
+      if (history.length > 0) {
+        session.lastSeenPostId = history[history.length - 1].id;
+        ctx.ops.persistSession(session);
+      }
+    } catch (err) {
+      sessionLog(session).warn(
+        `delta-context.failed: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
   }
 
   // Increment message counter

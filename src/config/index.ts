@@ -21,6 +21,7 @@ export type {
   PermissionMode,
   OverheadVisibility,
   PlatformOverhead,
+  AgentBackendKind,
 } from './types.js';
 export {
   LIMITS_DEFAULTS,
@@ -33,6 +34,11 @@ export {
   DEFAULT_OVERHEAD_VISIBILITY,
   isOverheadVisibility,
   resolveOverheadVisibility,
+  AGENT_BACKEND_VALUES,
+  DEFAULT_AGENT_BACKEND,
+  DEFAULT_MAX_BOT_HANDOFFS,
+  isAgentBackendKind,
+  resolveAgentBackend,
 } from './types.js';
 
 import type { Config, WorktreeMode as WorktreeModeType, PermissionMode, OverheadVisibility } from './types.js';

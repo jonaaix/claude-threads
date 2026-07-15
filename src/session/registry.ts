@@ -76,6 +76,31 @@ export class SessionRegistry {
     return undefined;
   }
 
+  /** All active sessions in a raw thread (across platforms). */
+  findAllByThreadId(threadId: string): Session[] {
+    const result: Session[] = [];
+    for (const session of this.sessions.values()) {
+      if (session.threadId === threadId) result.push(session);
+    }
+    return result;
+  }
+
+  /**
+   * Whether some OTHER platform has an active session in the same raw thread.
+   * Used by the multi-bot addressing gate: when the "active bot" for a thread
+   * is unknown (e.g. after a restart, which clears that in-memory state) but
+   * more than one bot has a session there, a plain (non-@mention) follow-up is
+   * ambiguous, so no bot should answer until one is explicitly @mentioned.
+   */
+  hasSessionInThreadExcept(threadId: string, platformId: string): boolean {
+    for (const session of this.sessions.values()) {
+      if (session.threadId === threadId && session.platformId !== platformId) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   /**
    * Find active session by post ID (for reaction handling).
    */

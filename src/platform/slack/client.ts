@@ -1082,6 +1082,25 @@ export class SlackClient extends BasePlatformClient {
   }
 
   /**
+   * Index of this bot's first @mention (either the `<@UID>` form or `@name`),
+   * or -1. See PlatformClient.mentionIndex.
+   */
+  mentionIndex(message: string): number {
+    let best = -1;
+    if (this.botUserId) {
+      const idIdx = message.indexOf(`<@${this.botUserId}>`);
+      if (idIdx >= 0) best = idIdx;
+    }
+    const nameMatch = new RegExp(`(^|\\s)@${escapeRegExp(this.botName)}\\b`, 'i').exec(message);
+    if (nameMatch) {
+      // Point at the '@', not the leading whitespace captured by (^|\s).
+      const at = nameMatch.index + nameMatch[1].length;
+      if (best < 0 || at < best) best = at;
+    }
+    return best;
+  }
+
+  /**
    * Extract the prompt from a message (remove bot mention).
    */
   extractPrompt(message: string): string {

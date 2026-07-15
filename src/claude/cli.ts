@@ -11,6 +11,7 @@ import { getClaudePath } from './version-check.js';
 import { OUTBOUND_ENV } from '../mcp/outbound-env.js';
 import { detectRateLimit, cooldownDeadline } from './rate-limit-detector.js';
 import type { PermissionMode } from '../config/types.js';
+import type { AgentBackend } from '../agent/backend.js';
 
 const log = createLogger('claude');
 
@@ -112,6 +113,8 @@ export interface ClaudeCliOptions {
   permissionMode?: PermissionMode;
   sessionId?: string;  // Claude session ID (UUID) for --session-id or --resume
   resume?: boolean;    // If true, use --resume instead of --session-id
+  /** Model override passed as `--model` (e.g. "sonnet"). Undefined = Claude default. */
+  model?: string;
   chrome?: boolean;    // If true, enable Chrome integration with --chrome
   platformConfig?: PlatformMcpConfig;  // Platform-specific config for MCP server
   appendSystemPrompt?: string;  // Additional system prompt to append
@@ -378,7 +381,7 @@ const STDERR_AGGREGATE_SOFT_CAP = 10 * 1024 * 1024; // 10MB
 // Module-private — safe to share: every ClaudeCli runs in the same process.
 let totalStderrBytes = 0;
 
-export class ClaudeCli extends EventEmitter {
+export class ClaudeCli extends EventEmitter implements AgentBackend {
   private process: ChildProcess | null = null;
   private options: ClaudeCliOptions;
   private buffer = '';
@@ -523,6 +526,12 @@ export class ClaudeCli extends EventEmitter {
     });
     args.push(...permResult.args);
     this.mcpConfigTempFile = permResult.tempFile;
+
+    // Model override (e.g. "sonnet", "opus", or a full model id). When unset,
+    // Claude uses its own default.
+    if (this.options.model) {
+      args.push('--model', this.options.model);
+    }
 
     // Chrome integration
     if (this.options.chrome) {

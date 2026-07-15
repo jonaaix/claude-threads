@@ -329,6 +329,81 @@ export function formatContextForClaude(messages: ThreadMessage[], previousWorkSu
   return lines.join('\n');
 }
 
+// ---------------------------------------------------------------------------
+// Multi-bot handoff: "missed messages" delta
+// ---------------------------------------------------------------------------
+
+/** Max number of missed messages fed to a bot on a single handoff (30–50 window). */
+export const DELTA_MSG_CAP = 40;
+/** Per-message truncation, matching formatContextForClaude's 500-char cap. */
+export const DELTA_TRUNC = 500;
+/** Hard total-character budget for one delta block (~5–6k tokens worst case). */
+export const DELTA_TOTAL_CHARS = 20000;
+
+/**
+ * Compute the messages a bot MISSED while it did not hold the baton — everything
+ * after its `lastSeenPostId`, excluding the triggering post (sent as the real
+ * prompt) and this bot's own posts (already in its context). Capped to the
+ * newest `cap` messages.
+ *
+ * @param history      Thread history (chronological, fetched with excludeBotMessages:false).
+ * @param lastSeenPostId  Newest post already in this bot's context; undefined or
+ *                        trimmed out of `history` → the whole (capped) window.
+ * @param ownBotUsername  This bot's username, to drop its own posts.
+ * @param triggerPostId   The @mention post being handled now (excluded).
+ */
+export function computeMissedDelta(
+  history: ThreadMessage[],
+  lastSeenPostId: string | undefined,
+  ownBotUsername: string,
+  triggerPostId?: string,
+  cap: number = DELTA_MSG_CAP
+): ThreadMessage[] {
+  let start = 0;
+  if (lastSeenPostId) {
+    const idx = history.findIndex(m => m.id === lastSeenPostId);
+    if (idx >= 0) start = idx + 1; // idx < 0 → marker scrolled out → whole window
+  }
+  const own = ownBotUsername.toLowerCase();
+  const delta = history
+    .slice(start)
+    .filter(m => m.id !== triggerPostId && m.username.toLowerCase() !== own);
+  return delta.length > cap ? delta.slice(delta.length - cap) : delta;
+}
+
+/**
+ * Format missed messages as a self-contained, attributed context block to
+ * prepend to a newly-addressed bot's prompt. Other assistants appear as
+ * `@name` like any participant. Respects DELTA_TOTAL_CHARS. Returns '' when
+ * there is nothing to inject.
+ */
+export function formatMissedMessagesForClaude(messages: ThreadMessage[]): string {
+  if (messages.length === 0) return '';
+  const lines: string[] = [
+    '[Messages you missed while another assistant was active. Each line is '
+      + 'attributed to its author; other assistants appear as @name like any '
+      + 'participant. Use these only as context for the request that follows:]',
+    '',
+  ];
+  let budget = DELTA_TOTAL_CHARS;
+  for (const msg of messages) {
+    let content = msg.message.length > DELTA_TRUNC
+      ? msg.message.substring(0, DELTA_TRUNC) + '…'
+      : msg.message;
+    if (content.length > budget) {
+      content = content.substring(0, Math.max(0, budget)) + '…';
+    }
+    budget -= content.length;
+    lines.push(`@${msg.username}: ${content}`);
+    if (budget <= 0) {
+      lines.push('… (older missed messages omitted)');
+      break;
+    }
+  }
+  lines.push('', '---', '', '[Current request:]');
+  return lines.join('\n');
+}
+
 /**
  * Update the context prompt post to show the user's selection.
  */

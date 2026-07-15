@@ -2,7 +2,7 @@
  * Session management types and interfaces
  */
 
-import type { ClaudeCli } from '../claude/cli.js';
+import type { AgentBackend, AgentBackendKind } from '../agent/backend.js';
 import type { PlatformClient, PlatformFile } from '../platform/index.js';
 import type { OverheadVisibility, PermissionMode } from '../config/index.js';
 import type { WorktreeInfo } from '../persistence/session-store.js';
@@ -240,6 +240,30 @@ export function markClaudeResponded(session: Session): void {
 }
 
 // =============================================================================
+// Multi-bot baton ("Stab") coordination
+// =============================================================================
+
+/**
+ * Explicit, thread-level baton state for multi-bot channels. Keyed by the raw
+ * threadId (peers sharing a channel see the same threadId) and held once on the
+ * SessionManager — NOT per-Session, which would let two peers each believe they
+ * hold the baton and would vanish between the first @mention and startSession
+ * completing.
+ *
+ * The baton transfers the moment a message @mentions a bot (authored by a human
+ * OR a bot); only the current `batonHolder` may answer a plain (non-@mention)
+ * follow-up. The user never holds the baton. Persisted so it survives a restart.
+ */
+export interface ThreadCoordination {
+  threadId: string;
+  mainBot: string;            // platformId of the first bot addressed on the root (main chat partner)
+  batonHolder: string;        // platformId that currently holds the baton (only this bot may answer)
+  participants: Set<string>;  // every platformId that has held the baton in this thread
+  updatedAt: number;          // epoch-ms of the last baton transfer
+  botHops: number;            // consecutive bot→bot handoffs since the last human message (loop budget)
+}
+
+// =============================================================================
 // Session Type
 // =============================================================================
 
@@ -265,12 +289,41 @@ export interface Session {
   // Working directory (can be changed per-session)
   workingDir: string;
 
-  // Claude process
-  claude: ClaudeCli;
+  // The session's agent backend (Claude Code CLI or opencode). Historically a
+  // concrete ClaudeCli; now typed against the AgentBackend interface so a
+  // session can run either backend. Field name kept as `claude` to avoid a
+  // wide mechanical rename — read it as "the session's agent".
+  claude: AgentBackend;
 
   // Claude account id the session is running under (when the bot is configured
   // with a `claudeAccounts` pool). Undefined in single-account mode.
   claudeAccountId?: string;
+
+  // Which agent backend this session runs on. Undefined is treated as 'claude'
+  // (legacy sessions predate opencode support). Set at session start from the
+  // platform's `agent` config; persisted so resume picks the same backend.
+  agentBackend?: AgentBackendKind;
+
+  // opencode's own session id (distinct from claudeSessionId), captured once
+  // the OpencodeAgent has created/resumed its session. Persisted to resume the
+  // same opencode session after a bot restart. Undefined for Claude sessions.
+  opencodeSessionId?: string;
+
+  // When this session's bot last held the floor in its thread (epoch ms),
+  // refreshed on each `result` event (i.e. when the bot ANSWERS) and set at
+  // session creation. In a shared channel, the bot with the most recent value
+  // "has the floor" and answers plain (non-@mention) follow-ups — so the
+  // conversation follows whoever last answered, not who was last @mentioned.
+  // Persisted so the floor survives a bot restart.
+  lastAddressedAt?: number;
+
+  // Newest thread post id already ingested into THIS bot's agent context. When
+  // the baton lands back on this bot after it was inactive, the handler dropped
+  // every intervening message — so on the next follow-up we feed the bot the
+  // "delta" (messages after this marker) as context. Advanced whenever we send
+  // a thread post to this session's agent; persisted so the delta boundary
+  // survives a restart. Undefined → seeded from the current thread on next use.
+  lastSeenPostId?: string;
 
   // Interactive state (collaboration - not Claude events)
   planApproved: boolean;

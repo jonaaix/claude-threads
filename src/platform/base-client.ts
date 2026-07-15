@@ -173,6 +173,15 @@ export abstract class BasePlatformClient extends EventEmitter implements Platfor
   abstract isBotMentioned(message: string): boolean;
 
   /**
+   * Character index of this bot's first @mention (or -1). Default is a coarse
+   * "mentioned → 0" fallback; platforms override with the real index so that
+   * "first mention wins" picks the right bot when several are mentioned at once.
+   */
+  mentionIndex(message: string): number {
+    return this.isBotMentioned(message) ? 0 : -1;
+  }
+
+  /**
    * Extract the prompt from a message (remove bot mention).
    */
   abstract extractPrompt(message: string): string;

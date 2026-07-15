@@ -17,7 +17,7 @@ import { ClaudeEvent } from '../claude/cli.js';
 import type { PlatformClient, PlatformUser, PlatformPost, PlatformFile } from '../platform/index.js';
 import { SessionStore, PersistedSession, PersistedContextPrompt } from '../persistence/session-store.js';
 import { GitHubEmailsStore } from '../persistence/github-emails-store.js';
-import { WorktreeMode, type LimitsConfig, type ResolvedLimits, type ClaudeAccount, type PermissionMode, type OverheadVisibility, type PlatformOverhead, DEFAULT_OVERHEAD_VISIBILITY, resolveLimits, effectivePermissionMode } from '../config/index.js';
+import { WorktreeMode, type LimitsConfig, type ResolvedLimits, type ClaudeAccount, type PermissionMode, type OverheadVisibility, type PlatformOverhead, type AgentBackendKind, DEFAULT_OVERHEAD_VISIBILITY, DEFAULT_AGENT_BACKEND, DEFAULT_MAX_BOT_HANDOFFS, resolveLimits, effectivePermissionMode } from '../config/index.js';
 import { AccountPool } from '../claude/account-pool.js';
 import type { SessionInfo } from '../ui/types.js';
 import { CleanupScheduler } from '../cleanup/index.js';
@@ -29,11 +29,12 @@ import * as events from '../operations/events/index.js';
 import * as commands from '../operations/commands/index.js';
 import * as lifecycle from './lifecycle.js';
 import { CHAT_PLATFORM_PROMPT } from './lifecycle.js';
+import type { PeerBotInfo } from '../commands/system-prompt-generator.js';
 import * as worktreeModule from '../operations/worktree/index.js';
 import * as contextPrompt from '../operations/context-prompt/index.js';
 import * as stickyMessage from '../operations/sticky-message/index.js';
 import * as plugin from '../operations/plugin/index.js';
-import type { Session, InitialSessionOptions } from './types.js';
+import type { Session, InitialSessionOptions, ThreadCoordination } from './types.js';
 import { SessionRegistry } from './registry.js';
 import * as reactionRouter from './reaction-router.js';
 import { post } from '../operations/post-helpers/index.js';
@@ -106,6 +107,29 @@ export class SessionManager extends EventEmitter {
   // Per-platform overhead visibility (sessionHeader / stickyMessage modes)
   private platformOverhead: Map<string, PlatformOverhead> = new Map();
 
+  // Per-platform agent backend (claude | opencode). Read at session start to
+  // decide which backend to spawn. Defaults to claude for unregistered ids.
+  private platformAgent: Map<string, AgentBackendKind> = new Map();
+
+  // Per-platform model override (e.g. "sonnet"), passed to the Claude CLI as
+  // --model. Undefined → backend default.
+  private platformModel: Map<string, string | undefined> = new Map();
+
+  // Per-platform bot specialization (config `description`). Surfaced to peer
+  // bots' system prompts so they know when to hand off to which peer.
+  private platformDescription: Map<string, string | undefined> = new Map();
+
+  // Multi-bot baton ("Stab") coordination, keyed by raw threadId. The single
+  // in-process source of truth for "which bot may answer in this thread". All N
+  // peer clients share this one manager, so this map is shared by every peer.
+  // Rehydrated from the session store in initialize(); persisted on transfer.
+  private threadCoordination: Map<string, ThreadCoordination> = new Map();
+
+  // Cap on consecutive bot-to-bot handoffs per user impulse (0 = unlimited).
+  // See Config.maxBotHandoffs. Set in the constructor.
+  private maxBotHandoffs: number = DEFAULT_MAX_BOT_HANDOFFS;
+
+
   // Auto-update manager (set via setAutoUpdateManager)
   private autoUpdateManager: commands.AutoUpdateManagerInterface | null = null;
 
@@ -129,9 +153,11 @@ export class SessionManager extends EventEmitter {
     threadLogsRetentionDays = 30,
     limits?: LimitsConfig,
     claudeAccounts?: ClaudeAccount[],
-    respondOnlyWhenMentioned = false
+    respondOnlyWhenMentioned = false,
+    maxBotHandoffs: number = DEFAULT_MAX_BOT_HANDOFFS
   ) {
     super();
+    this.maxBotHandoffs = maxBotHandoffs;
     this.workingDir = workingDir;
     this.permissionMode =
       typeof permissionModeOrSkipFlag === 'boolean'
@@ -174,13 +200,19 @@ export class SessionManager extends EventEmitter {
   addPlatform(
     platformId: string,
     client: PlatformClient,
-    overhead?: Partial<PlatformOverhead>
+    overhead?: Partial<PlatformOverhead>,
+    agent?: AgentBackendKind,
+    model?: string,
+    description?: string
   ): void {
     this.platforms.set(platformId, client);
     this.platformOverhead.set(platformId, {
       sessionHeader: overhead?.sessionHeader ?? DEFAULT_OVERHEAD_VISIBILITY,
       stickyMessage: overhead?.stickyMessage ?? DEFAULT_OVERHEAD_VISIBILITY,
     });
+    this.platformAgent.set(platformId, agent ?? DEFAULT_AGENT_BACKEND);
+    this.platformModel.set(platformId, model);
+    this.platformDescription.set(platformId, description);
     client.on('message', (post, user) => this.handleMessage(platformId, post, user));
     client.on('reaction', (reaction, user) => {
       if (user) {
@@ -206,9 +238,243 @@ export class SessionManager extends EventEmitter {
     log.info(`📡 Platform "${platformId}" registered`);
   }
 
+  /**
+   * True if any registered bot OTHER than `platformId`'s is @mentioned in the
+   * message. Each platform client applies its own mention format, so we ask
+   * them directly rather than parse text (works for Mattermost and Slack).
+   */
+  otherBotMentioned(message: string, platformId: string): boolean {
+    for (const [pid, client] of this.platforms) {
+      if (pid === platformId) continue;
+      if (client.isBotMentioned(message)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Bot names of OTHER registered platforms that share this platform's channel.
+   * Injected into the system prompt so a bot knows which peers it can hand off
+   * to (via `@name`). Matches on server URL + channelId so bots in different
+   * channels/servers aren't treated as peers.
+   */
+  getPeerBotNames(platformId: string): string[] {
+    return this.getPeerBots(platformId).map(p => p.name);
+  }
+
+  /**
+   * Peer bots (name + optional specialization) sharing this platform's channel.
+   * The `description` comes from each peer's config and is injected into this
+   * bot's system prompt so it knows when to hand off to which peer.
+   */
+  getPeerBots(platformId: string): PeerBotInfo[] {
+    const self = this.platforms.get(platformId);
+    if (!self) return [];
+    const selfCfg = self.getMcpConfig();
+    const peers: PeerBotInfo[] = [];
+    for (const [pid, client] of this.platforms) {
+      if (pid === platformId) continue;
+      const cfg = client.getMcpConfig();
+      if (cfg.url === selfCfg.url && cfg.channelId === selfCfg.channelId) {
+        peers.push({ name: client.getBotName(), description: this.platformDescription.get(pid) });
+      }
+    }
+    return peers;
+  }
+
+  /** True if `username` is the bot account of any registered platform. */
+  isBotUsername(username: string): boolean {
+    const u = username.toLowerCase();
+    for (const client of this.platforms.values()) {
+      if (client.getBotName().toLowerCase() === u) return true;
+    }
+    return false;
+  }
+
+  /**
+   * The bot (platformId) that currently holds the floor in a thread: the one
+   * whose session most recently ANSWERED (its `lastAddressedAt` is refreshed on
+   * each `result` event, and set at session creation). Derived from persisted
+   * state, so it's correct after a restart. Undefined when no bot has a session
+   * in the thread.
+   */
+  getActiveBotForThread(threadId: string): string | undefined {
+    let floor: Session | undefined;
+    for (const session of this.registry.findAllByThreadId(threadId)) {
+      if (!floor || (session.lastAddressedAt ?? 0) > (floor.lastAddressedAt ?? 0)) {
+        floor = session;
+      }
+    }
+    return floor?.platformId;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Multi-bot baton ("Stab") coordination
+  // ---------------------------------------------------------------------------
+
+  /**
+   * The platformId of the bot addressed by an @mention in `message`, scoped to
+   * the channel-peers of `platformId` (same match as getPeerBotNames: server URL
+   * + channelId) PLUS self, which is checked FIRST — so "@me and @peer" resolves
+   * to me (I keep/claim the baton). Returns undefined for a plain message or an
+   * @mention of a human. On multiple peer mentions, returns the first match in
+   * iteration order (deterministic across all N peer invocations of the gate).
+   */
+  resolveMentionedBot(message: string, platformId: string): string | undefined {
+    const self = this.platforms.get(platformId);
+    if (!self) return undefined;
+    const selfCfg = self.getMcpConfig();
+    // Among the candidates (self + channel-peers), the bot whose @mention appears
+    // EARLIEST in the message wins — so when several bots are mentioned in one
+    // message, exactly one takes the baton, and every bot's handler computes the
+    // same winner (same message + same candidate set → deterministic). Ties (same
+    // index) fall to registration order.
+    let winner: string | undefined;
+    let bestIndex = Infinity;
+    for (const [pid, client] of this.platforms) {
+      if (pid !== platformId) {
+        const cfg = client.getMcpConfig();
+        if (cfg.url !== selfCfg.url || cfg.channelId !== selfCfg.channelId) continue;
+      }
+      const idx = client.mentionIndex(message);
+      if (idx >= 0 && idx < bestIndex) {
+        bestIndex = idx;
+        winner = pid;
+      }
+    }
+    return winner;
+  }
+
+  /** The platformId currently holding the baton in a thread, if known. */
+  getBatonHolder(threadId: string): string | undefined {
+    return this.threadCoordination.get(threadId)?.batonHolder;
+  }
+
+  /**
+   * Whether the bot named `botUsername` has an active session in `threadId` that
+   * is still mid-turn (processing). Used to defer bot→bot handoffs: an @mention a
+   * bot emits WHILE it is still answering is not a settled handoff — the peer must
+   * wait until the author's turn completes, so the author isn't cut off mid-answer.
+   */
+  isBotProcessingInThread(threadId: string, botUsername: string): boolean {
+    const u = botUsername.toLowerCase();
+    for (const s of this.registry.findAllByThreadId(threadId)) {
+      if (s.platform.getBotName().toLowerCase() === u) {
+        return s.isProcessing === true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Move the baton to `toPlatformId` (at @mention time). Idempotent: when the
+   * holder is unchanged this only records participation and does NOT write, so
+   * the N peer clients that all receive the same post produce at most one
+   * sessions.json write per actual transfer. Sets `mainBot` on first touch.
+   *
+   * `opts.byBot` marks a bot→bot handoff: it bumps the consecutive-hop counter
+   * (the loop budget) exactly once per real transfer (the counter rides on the
+   * holder-changed path, which only the first of the N peer calls takes).
+   */
+  transferBaton(threadId: string, toPlatformId: string, opts?: { byBot?: boolean }): void {
+    const existing = this.threadCoordination.get(threadId);
+    if (existing && existing.batonHolder === toPlatformId) {
+      // No change → no write. Just make sure participation is recorded.
+      if (!existing.participants.has(toPlatformId)) {
+        existing.participants.add(toPlatformId);
+        this.saveThreadCoordination(threadId);
+      }
+      return;
+    }
+    const coord: ThreadCoordination = existing ?? {
+      threadId,
+      mainBot: toPlatformId,
+      batonHolder: toPlatformId,
+      participants: new Set<string>(),
+      updatedAt: 0,
+      botHops: 0,
+    };
+    coord.batonHolder = toPlatformId;
+    coord.participants.add(toPlatformId);
+    coord.updatedAt = Date.now();
+    if (opts?.byBot) coord.botHops = (coord.botHops ?? 0) + 1;
+    this.threadCoordination.set(threadId, coord);
+    this.saveThreadCoordination(threadId);
+  }
+
+  /** Consecutive bot→bot handoffs in this thread since the last human message. */
+  getBotHops(threadId: string): number {
+    return this.threadCoordination.get(threadId)?.botHops ?? 0;
+  }
+
+  /**
+   * True when the bot-to-bot exchange has reached the configured cap and should
+   * pause (control returns to the user). Always false when the cap is disabled
+   * (`maxBotHandoffs <= 0`) or no coordination exists yet.
+   */
+  botHandoffLimitReached(threadId: string): boolean {
+    if (this.maxBotHandoffs <= 0) return false;
+    return this.getBotHops(threadId) >= this.maxBotHandoffs;
+  }
+
+  /** The configured consecutive bot-to-bot handoff cap (0 = unlimited). */
+  getMaxBotHandoffs(): number {
+    return this.maxBotHandoffs;
+  }
+
+  /**
+   * Record human activity in a thread: resets the bot→bot hop budget so a fresh
+   * user impulse gives the bots a full new round of autonomous exchange. Called
+   * for every human message. Idempotent — only writes when the counter changes.
+   */
+  noteUserActivity(threadId: string): void {
+    const coord = this.threadCoordination.get(threadId);
+    if (coord && (coord.botHops ?? 0) !== 0) {
+      coord.botHops = 0;
+      this.saveThreadCoordination(threadId);
+    }
+  }
+
+  /** Persist one thread's baton state to the session store. */
+  private saveThreadCoordination(threadId: string): void {
+    const coord = this.threadCoordination.get(threadId);
+    if (!coord) return;
+    this.sessionStore.saveThreadCoordination(threadId, {
+      mainBot: coord.mainBot,
+      batonHolder: coord.batonHolder,
+      participants: [...coord.participants],
+      updatedAt: coord.updatedAt,
+      botHops: coord.botHops,
+    });
+  }
+
+  /**
+   * Backward-compat seed: threads created before the explicit baton have no
+   * coordination entry. On first need, derive the holder from the legacy floor
+   * (max `lastAddressedAt`) and adopt it as explicit state. Returns the holder,
+   * or undefined when no bot has a session in the thread.
+   */
+  seedBatonFromFloor(threadId: string): string | undefined {
+    if (this.threadCoordination.has(threadId)) return this.getBatonHolder(threadId);
+    const floor = this.getActiveBotForThread(threadId);
+    if (floor) this.transferBaton(threadId, floor);
+    return floor;
+  }
+
+  /**
+   * True when `platformId` shares its channel with at least one peer bot. Used
+   * to gate multi-bot behaviors (auto delta-context injection) so single-bot
+   * channels are entirely unaffected.
+   */
+  peerBotsPresent(platformId: string): boolean {
+    return this.getPeerBotNames(platformId).length > 0;
+  }
+
   removePlatform(platformId: string): void {
     this.platforms.delete(platformId);
     this.platformOverhead.delete(platformId);
+    this.platformAgent.delete(platformId);
+    this.platformModel.delete(platformId);
+    this.platformDescription.delete(platformId);
     stickyMessage.clearHiddenCleanupTracking(platformId);
   }
 
@@ -365,6 +631,14 @@ export class SessionManager extends EventEmitter {
         sessionHeader: DEFAULT_OVERHEAD_VISIBILITY,
         stickyMessage: DEFAULT_OVERHEAD_VISIBILITY,
       },
+
+      getPlatformAgent: (pid) => this.platformAgent.get(pid) ?? DEFAULT_AGENT_BACKEND,
+
+      getPlatformModel: (pid) => this.platformModel.get(pid),
+
+      getPeerBotNames: (pid) => this.getPeerBotNames(pid),
+
+      getPeerBots: (pid) => this.getPeerBots(pid),
     };
 
     return createSessionContext(config, state, ops);
@@ -653,6 +927,10 @@ export class SessionManager extends EventEmitter {
       resumeFailCount: session.lifecycle.resumeFailCount,
       claudeAccountId: session.claudeAccountId,
       sessionHeaderMode: session.sessionHeaderMode,
+      agentBackend: session.agentBackend,
+      opencodeSessionId: session.opencodeSessionId,
+      lastAddressedAt: session.lastAddressedAt,
+      lastSeenPostId: session.lastSeenPostId,
     };
     this.sessionStore.save(session.sessionId, state);
   }
@@ -893,6 +1171,11 @@ export class SessionManager extends EventEmitter {
     const persisted = this.sessionStore.load();
     log.info(`📂 Loaded ${persisted.size} session(s) from persistence`);
 
+    // Rehydrate multi-bot baton state, then reconcile it with the persisted
+    // sessions so the baton survives a restart (no "ambiguous, please @mention"
+    // regression) without leaking entries for threads that no longer exist.
+    this.rehydrateThreadCoordination(persisted);
+
     // Gather session header and task list post IDs by platform (to exclude from sticky cleanup)
     // These are pinned posts that belong to active sessions and should NOT be deleted
     const excludePostIdsByPlatform = new Map<string, Set<string>>();
@@ -959,6 +1242,55 @@ export class SessionManager extends EventEmitter {
     await this.updateStickyMessage();
   }
 
+  /**
+   * Rebuild the in-memory baton map from persistence on startup and reconcile
+   * it with the sessions that actually exist:
+   *   1. Load persisted coordination (participants back into a Set).
+   *   2. Seed any threadId that has persisted sessions but no coordination
+   *      entry, choosing the platformId with the max `lastAddressedAt` (the
+   *      legacy floor) as the holder.
+   *   3. Prune coordination entries whose threadId has no persisted session.
+   */
+  private rehydrateThreadCoordination(persisted: Map<string, PersistedSession>): void {
+    // 1. Load persisted coordination.
+    this.threadCoordination = new Map();
+    for (const [threadId, c] of this.sessionStore.getThreadCoordination()) {
+      this.threadCoordination.set(threadId, {
+        threadId,
+        mainBot: c.mainBot,
+        batonHolder: c.batonHolder,
+        participants: new Set(c.participants ?? []),
+        updatedAt: c.updatedAt ?? 0,
+        botHops: c.botHops ?? 0,
+      });
+    }
+
+    // Group persisted sessions by raw threadId → { platformId: lastAddressedAt }.
+    const floorByThread = new Map<string, { platformId: string; at: number }>();
+    for (const state of persisted.values()) {
+      const at = state.lastAddressedAt ?? 0;
+      const best = floorByThread.get(state.threadId);
+      if (!best || at > best.at) {
+        floorByThread.set(state.threadId, { platformId: state.platformId, at });
+      }
+    }
+
+    // 2. Seed gaps from the derived floor.
+    for (const [threadId, best] of floorByThread) {
+      if (!this.threadCoordination.has(threadId)) {
+        this.transferBaton(threadId, best.platformId);
+      }
+    }
+
+    // 3. Prune entries whose thread has no persisted session anymore.
+    for (const threadId of [...this.threadCoordination.keys()]) {
+      if (!floorByThread.has(threadId)) {
+        this.threadCoordination.delete(threadId);
+        this.sessionStore.removeThreadCoordination(threadId);
+      }
+    }
+  }
+
   async startSession(
     options: { prompt: string; files?: PlatformFile[]; skipWorktreePrompt?: boolean },
     username: string,
@@ -971,8 +1303,18 @@ export class SessionManager extends EventEmitter {
     await lifecycle.startSession(options, username, displayName, replyToPostId, platformId, this.getContext(), triggeringPostId, initialOptions);
   }
 
-  // Helper to find session by threadId (sessions are keyed by composite platformId:threadId)
-  private findSessionByThreadId(threadId: string): Session | undefined {
+  // Helper to find session by threadId (sessions are keyed by composite platformId:threadId).
+  //
+  // CRITICAL for multi-bot channels: pass `platformId` whenever the caller knows
+  // it. Several bots share one raw threadId, so the unscoped lookup returns an
+  // ARBITRARY bot's session (whichever was created first). That misrouted a
+  // handoff a bot forwarded into a PEER's session back into its OWN — producing
+  // an infinite self-echo loop. With `platformId`, the lookup is scoped to the
+  // right bot. The unscoped fallback is kept for legacy single-bot call sites.
+  private findSessionByThreadId(threadId: string, platformId?: string): Session | undefined {
+    if (platformId) {
+      return this.registry.find(platformId, threadId);
+    }
     for (const session of this.registry.getAll()) {
       if (session.threadId === threadId) {
         return session;
@@ -982,8 +1324,8 @@ export class SessionManager extends EventEmitter {
   }
 
 
-  async sendFollowUp(threadId: string, message: string, files?: PlatformFile[], username?: string, displayName?: string, options?: { system?: boolean }): Promise<void> {
-    const session = this.findSessionByThreadId(threadId);
+  async sendFollowUp(threadId: string, message: string, files?: PlatformFile[], username?: string, displayName?: string, options?: { system?: boolean; triggeringPostId?: string; platformId?: string }): Promise<void> {
+    const session = this.findSessionByThreadId(threadId, options?.platformId);
     if (!session || !session.claude.isRunning()) return;
     await lifecycle.sendFollowUp(session, message, files, this.getContext(), username, displayName, options);
   }
@@ -1043,14 +1385,14 @@ export class SessionManager extends EventEmitter {
   }
 
   // Commands
-  async cancelSession(threadId: string, username: string): Promise<void> {
-    const session = this.findSessionByThreadId(threadId);
+  async cancelSession(threadId: string, username: string, platformId?: string): Promise<void> {
+    const session = this.findSessionByThreadId(threadId, platformId);
     if (!session) return;
     await commands.cancelSession(session, username, this.getContext());
   }
 
-  async interruptSession(threadId: string, username: string): Promise<void> {
-    const session = this.findSessionByThreadId(threadId);
+  async interruptSession(threadId: string, username: string, platformId?: string): Promise<void> {
+    const session = this.findSessionByThreadId(threadId, platformId);
     if (!session) return;
     await commands.interruptSession(session, username);
   }

@@ -8,6 +8,7 @@ import {
   resolveOverheadVisibility,
   isOverheadVisibility,
   OVERHEAD_VISIBILITY_VALUES,
+  resolveAgentBackend,
   type MattermostPlatformConfig,
   type SlackPlatformConfig,
   type PlatformInstanceConfig,
@@ -18,6 +19,7 @@ import type { CliArgs } from './config/index.js';
 import { runOnboarding } from './onboarding.js';
 import { MattermostClient, SlackClient, type PlatformClient, type PlatformPost, type PlatformUser } from './platform/index.js';
 import { SessionManager } from './session/index.js';
+import { opencodeHub } from './opencode/server.js';
 import { SessionStore } from './persistence/session-store.js';
 import { checkForUpdates } from './update-notifier.js';
 import { VERSION } from './version.js';
@@ -25,6 +27,7 @@ import { keepAlive } from './utils/keep-alive.js';
 import { startReactMeasureCleanup } from './utils/perf-cleanup.js';
 import { dim, red } from './utils/colors.js';
 import { validateClaudeCli } from './claude/version-check.js';
+import { validateOpencode } from './opencode/version-check.js';
 import { startUI, type UIProvider } from './ui/index.js';
 import { setLogHandler } from './utils/logger.js';
 import { handleMessage } from './message-handler.js';
@@ -363,16 +366,38 @@ async function startWithoutDaemon() {
       ?? firstPlatformConfig.skipPermissions,
   });
 
-  // Check Claude CLI version
+  // Which backends does this config actually use? A bot configured entirely
+  // for opencode must not be blocked by a missing/incompatible Claude CLI, and
+  // vice versa.
+  const backendsInUse = new Set(
+    config.platforms.map((p) => resolveAgentBackend(p.agent, `platforms[${p.id}].agent`)),
+  );
+
+  // Check Claude CLI version (always computed for the startup/status display).
   const claudeValidation = validateClaudeCli();
 
-  // Fail on incompatible version unless --skip-version-check is set
-  if (!claudeValidation.compatible && !opts.skipVersionCheck) {
+  // Fail on incompatible version unless --skip-version-check is set — but only
+  // when at least one platform actually runs on Claude.
+  if (backendsInUse.has('claude') && !claudeValidation.compatible && !opts.skipVersionCheck) {
     console.error(red(`  ❌ ${claudeValidation.message}`));
     console.error('');
     console.error(dim(`  Use --skip-version-check to bypass this check (not recommended)`));
     console.error('');
     process.exit(1);
+  }
+
+  // Check the opencode binary when any platform uses it. Non-fatal: a mixed
+  // deployment's Claude platforms should still start, and opencode sessions
+  // surface their own error if the server can't be spawned.
+  if (backendsInUse.has('opencode')) {
+    const opencodeValidation = validateOpencode();
+    if (!opencodeValidation.compatible) {
+      console.error(red(`  ⚠️  ${opencodeValidation.message}`));
+      console.error(dim('     opencode-backed sessions will not work until this is resolved.'));
+      console.error('');
+    } else {
+      console.log(dim(`  ✓ ${opencodeValidation.message}`));
+    }
   }
 
   // Warn on an incompatible env + config combo: CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1
@@ -578,7 +603,8 @@ async function startWithoutDaemon() {
     threadLogsRetentionDays,
     config.limits,  // Resource limits (optional, has sensible defaults)
     config.claudeAccounts,  // Claude account pool (undefined = single-account mode)
-    config.respondOnlyWhenMentioned  // Quiet-mode default for new sessions (#402)
+    config.respondOnlyWhenMentioned,  // Quiet-mode default for new sessions (#402)
+    config.maxBotHandoffs  // Cap on consecutive bot-to-bot handoffs (undefined → default)
   );
 
   // Set sticky message customization from config
@@ -636,7 +662,11 @@ async function startWithoutDaemon() {
         platformConfig.stickyMessage,
         `platforms[${platformConfig.id}].stickyMessage`,
       ),
-    });
+    }, resolveAgentBackend(
+      platformConfig.agent,
+      `platforms[${platformConfig.id}].agent`,
+    ), typeof platformConfig.model === 'string' ? platformConfig.model : undefined,
+    typeof platformConfig.description === 'string' ? platformConfig.description : undefined);
 
     // Wire up platform events
     wirePlatformEvents(platformConfig.id, client, session, ui);
@@ -810,6 +840,10 @@ async function startWithoutDaemon() {
     }
 
     await session.killAllSessions();
+
+    // Shut down the shared opencode server (if one was started for any
+    // opencode-backed session). No-op when no opencode session ever ran.
+    await opencodeHub.shutdown();
 
     // Stop auto-update manager
     autoUpdateManager?.stop();

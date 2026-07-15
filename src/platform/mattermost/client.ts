@@ -727,20 +727,34 @@ export class MattermostClient extends BasePlatformClient {
     }
   }
 
-  // Check if message mentions the bot
+  // Check if message mentions the bot.
+  // Robust to surrounding markdown/punctuation: matches `@bot`, `**@bot**`,
+  // `(@bot)`, `@bot,` etc. — bots (esp. small models) often wrap mentions in
+  // bold. The `(?<!\w)` guard still excludes email-like `user@bot`, and
+  // `(?!\w)` prevents matching a longer name (`@botx`). See mentionRegex().
   isBotMentioned(message: string): boolean {
-    const botName = escapeRegExp(this.botName);
-    // Match @botname at start or with space before
-    const mentionPattern = new RegExp(`(^|\\s)@${botName}\\b`, 'i');
-    return mentionPattern.test(message);
+    return this.mentionRegex().test(message);
   }
 
-  // Extract prompt from message (remove bot mention)
+  /** Index of this bot's first @mention, or -1. See PlatformClient.mentionIndex. */
+  mentionIndex(message: string): number {
+    const m = this.mentionRegex().exec(message);
+    return m ? m.index : -1;
+  }
+
+  // Extract prompt from message (remove bot mention). Replace with '' (the
+  // mention regex is zero-width around the name, so surrounding spaces stay put
+  // and collapse naturally on trim — no doubled space).
   extractPrompt(message: string): string {
+    return message.replace(this.mentionRegex('g'), '').trim();
+  }
+
+  /** Case-insensitive regex matching an @mention of this bot anywhere in text. */
+  private mentionRegex(extraFlags = ''): RegExp {
     const botName = escapeRegExp(this.botName);
-    return message
-      .replace(new RegExp(`(^|\\s)@${botName}\\b`, 'gi'), ' ')
-      .trim();
+    // (?<!\w) → not preceded by a word char (so `**@bot` matches, `x@bot` doesn't)
+    // (?!\w)  → not followed by a word char (so `@bot` matches, `@botx` doesn't)
+    return new RegExp(`(?<!\\w)@${botName}(?!\\w)`, `i${extraFlags}`);
   }
 
   // Get MCP config for permission server

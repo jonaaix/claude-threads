@@ -239,8 +239,13 @@ export function handleEventPostProcessing(
   if (event.type === 'result') {
     ctx.ops.stopTyping(session);
     session.isProcessing = false;
+    // This bot just answered → it takes the floor in the thread. In a shared
+    // channel the floor follows the bot that LAST ANSWERED (not the one last
+    // @mentioned), so plain follow-ups continue with whoever just spoke.
+    session.lastAddressedAt = Date.now();
     ctx.ops.emitSessionUpdate(session.sessionId, { status: getSessionStatus(session) });
     updateUsageStats(session, event, ctx);
+    ctx.ops.persistSession(session);
   }
 
   // Track tool errors for bug reporting context

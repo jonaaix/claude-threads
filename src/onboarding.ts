@@ -17,7 +17,9 @@ import {
   type LimitsConfig,
   type PermissionMode,
   type OverheadVisibility,
+  type AgentBackendKind,
   DEFAULT_OVERHEAD_VISIBILITY,
+  DEFAULT_AGENT_BACKEND,
 } from './config/index.js';
 import { bold, dim, green } from './utils/colors.js';
 import { validateClaudeCli } from './claude/version-check.js';
@@ -49,6 +51,29 @@ const PERMISSION_MODE_CHOICES = [
 
 function permissionModeChoiceIndex(mode: PermissionMode): number {
   return PERMISSION_MODE_CHOICES.findIndex((c) => c.value === mode);
+}
+
+/**
+ * Agent-backend picker, reused by both platform flows. `claude` is the default
+ * (unchanged behavior). opencode is configured entirely outside claude-threads
+ * — its auth and default model live in the host's opencode config (`opencode
+ * auth login` / opencode.json) — so this only selects which backend to spawn.
+ */
+const AGENT_BACKEND_CHOICES = [
+  {
+    title: 'Claude Code (default)',
+    value: 'claude' as AgentBackendKind,
+    description: 'The Claude Code CLI — full feature support',
+  },
+  {
+    title: 'opencode',
+    value: 'opencode' as AgentBackendKind,
+    description: 'The opencode agent — requires the `opencode` binary + its own auth/model config on this host',
+  },
+];
+
+function agentBackendChoiceIndex(kind: AgentBackendKind): number {
+  return AGENT_BACKEND_CHOICES.findIndex((c) => c.value === kind);
 }
 
 /**
@@ -1069,6 +1094,7 @@ async function setupMattermostPlatform(
   let lastToken = existingMattermost?.token || '';
   let lastChannelId = existingMattermost?.channelId || '';
   let lastBotName = existingMattermost?.botName || 'claude-code';
+  let lastDescription = existingMattermost?.description || '';
   let lastAllowedUsers = existingMattermost?.allowedUsers?.join(',') || '';
   // New configs default to `auto` (the onboarding recommendation). Existing
   // configs keep whatever they had — never silently change an operator's
@@ -1079,6 +1105,9 @@ async function setupMattermostPlatform(
         skipPermissions: existingMattermost.skipPermissions,
       })
     : 'auto';
+  // Agent backend. New configs default to claude; reconfigure keeps the
+  // existing choice so we never silently switch an operator's backend.
+  let agentBackend: AgentBackendKind = existingMattermost?.agent ?? DEFAULT_AGENT_BACKEND;
   // Detect a split config (sessionHeader and stickyMessage set to different
   // values). The wizard's single-pick UX cannot represent that — silently
   // collapsing it would be data loss. Skip the prompt entirely in that case
@@ -1160,7 +1189,18 @@ async function setupMattermostPlatform(
       initial: lastBotName,
     }, { onCancel });
 
-    const basicSettings = { url, displayName, token, channelId, botName };
+    console.log('');
+    console.log(dim('  Specialization (optional): a short role like "Mixpanel analytics" or'));
+    console.log(dim('  "infra & deploys". Shown to OTHER bots in the same channel so they know'));
+    console.log(dim('  when to hand off to this one. Leave empty if not running multiple bots.'));
+    const { description } = await prompts({
+      type: 'text',
+      name: 'description',
+      message: 'Bot specialization',
+      initial: lastDescription,
+    }, { onCancel });
+
+    const basicSettings = { url, displayName, token, channelId, botName, description: (description || '').trim() };
 
     // Use existing token if user left it empty
     const finalToken = basicSettings.token || lastToken;
@@ -1209,7 +1249,19 @@ async function setupMattermostPlatform(
       }
     }
 
-    // Now ask about permission mode (after user access is settled)
+    // Choose the agent backend first — permission mode below only applies to
+    // Claude (opencode manages permissions itself, outside claude-threads).
+    const { agent } = await prompts({
+      type: 'select',
+      name: 'agent',
+      message: 'Which agent backend should this platform use?',
+      choices: AGENT_BACKEND_CHOICES,
+      initial: agentBackendChoiceIndex(agentBackend),
+    }, { onCancel });
+    agentBackend = agent;
+
+    // Now ask about permission mode (after user access is settled).
+    // Applies to the Claude backend only; opencode ignores it.
     const { permissionMode } = await prompts({
       type: 'select',
       name: 'permissionMode',
@@ -1247,6 +1299,7 @@ async function setupMattermostPlatform(
     lastToken = finalToken;
     lastChannelId = basicSettings.channelId;
     lastBotName = basicSettings.botName;
+    lastDescription = basicSettings.description;
     lastAllowedUsers = allowedUsers.join(',');
     lastPermissionMode = permissionMode;
     lastChannelVerbosity = channelVerbosity;
@@ -1320,6 +1373,10 @@ async function setupMattermostPlatform(
       botName: basicSettings.botName,
       allowedUsers,
       permissionMode: lastPermissionMode,
+      // Only written when set — keeps single-bot configs minimal.
+      ...(lastDescription ? { description: lastDescription } : {}),
+      // Only written when non-default so Claude configs stay minimal.
+      ...(agentBackend !== DEFAULT_AGENT_BACKEND ? { agent: agentBackend } : {}),
       // Verbosity persistence:
       //  - Split config (user had different values per surface, prompt was
       //    skipped): preserve both originals verbatim.
@@ -1508,6 +1565,7 @@ async function setupSlackPlatform(
   let lastAppToken = existingSlack?.appToken || '';
   let lastChannelId = existingSlack?.channelId || '';
   let lastBotName = existingSlack?.botName || 'claude';
+  let lastDescription = existingSlack?.description || '';
   let lastAllowedUsers = existingSlack?.allowedUsers?.join(',') || '';
   let lastPermissionMode: PermissionMode = existingSlack
     ? resolvePermissionMode({
@@ -1515,6 +1573,9 @@ async function setupSlackPlatform(
         skipPermissions: existingSlack.skipPermissions,
       })
     : 'auto';
+  // Agent backend — see setupMattermostPlatform. Keeps the existing choice on
+  // reconfigure; defaults to claude for new configs.
+  let agentBackend: AgentBackendKind = existingSlack?.agent ?? DEFAULT_AGENT_BACKEND;
   // See setupMattermostPlatform for the rationale on split-config detection
   // — the wizard's single-pick UX cannot represent split values, so we
   // detect and skip rather than silently collapsing them.
@@ -1598,7 +1659,18 @@ async function setupSlackPlatform(
       initial: lastBotName,
     }, { onCancel });
 
-    const basicSettings = { displayName, botToken, appToken, channelId, botName };
+    console.log('');
+    console.log(dim('  Specialization (optional): a short role like "Mixpanel analytics" or'));
+    console.log(dim('  "infra & deploys". Shown to OTHER bots in the same channel so they know'));
+    console.log(dim('  when to hand off to this one. Leave empty if not running multiple bots.'));
+    const { description } = await prompts({
+      type: 'text',
+      name: 'description',
+      message: 'Bot specialization',
+      initial: lastDescription,
+    }, { onCancel });
+
+    const basicSettings = { displayName, botToken, appToken, channelId, botName, description: (description || '').trim() };
 
     // Use existing tokens if user left them empty
     const finalBotToken = basicSettings.botToken || lastBotToken;
@@ -1649,7 +1721,19 @@ async function setupSlackPlatform(
       }
     }
 
-    // Now ask about permission mode (after user access is settled)
+    // Choose the agent backend first — permission mode below only applies to
+    // Claude (opencode manages permissions itself, outside claude-threads).
+    const { agent } = await prompts({
+      type: 'select',
+      name: 'agent',
+      message: 'Which agent backend should this platform use?',
+      choices: AGENT_BACKEND_CHOICES,
+      initial: agentBackendChoiceIndex(agentBackend),
+    }, { onCancel });
+    agentBackend = agent;
+
+    // Now ask about permission mode (after user access is settled).
+    // Applies to the Claude backend only; opencode ignores it.
     const { permissionMode } = await prompts({
       type: 'select',
       name: 'permissionMode',
@@ -1685,6 +1769,7 @@ async function setupSlackPlatform(
     lastAppToken = finalAppToken;
     lastChannelId = basicSettings.channelId;
     lastBotName = basicSettings.botName;
+    lastDescription = basicSettings.description;
     lastAllowedUsers = allowedUsers.join(',');
     lastPermissionMode = permissionMode;
     lastChannelVerbosity = channelVerbosity;
@@ -1764,6 +1849,10 @@ async function setupSlackPlatform(
       botName: basicSettings.botName,
       allowedUsers,
       permissionMode: lastPermissionMode,
+      // Only written when set — keeps single-bot configs minimal.
+      ...(lastDescription ? { description: lastDescription } : {}),
+      // Only written when non-default so Claude configs stay minimal.
+      ...(agentBackend !== DEFAULT_AGENT_BACKEND ? { agent: agentBackend } : {}),
       // Same persistence rules as Mattermost (split → preserve, default →
       // omit, non-default → write both with same value).
       ...(hasSplitVerbosity

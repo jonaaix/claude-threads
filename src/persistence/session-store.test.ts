@@ -628,4 +628,67 @@ describe('SessionStore', () => {
     });
   });
 
+  describe('threadCoordination (multi-bot baton)', () => {
+    let tempFile: string;
+    let tempStore: SessionStore;
+
+    beforeEach(() => {
+      tempFile = join(tmpdir(), `session-store-coord-${Date.now()}-${Math.floor(performance.now())}.json`);
+      tempStore = new SessionStore(tempFile);
+    });
+
+    afterEach(() => {
+      if (existsSync(tempFile)) unlinkSync(tempFile);
+    });
+
+    it('defaults to an empty map when no coordination is persisted', () => {
+      expect(tempStore.getThreadCoordination().size).toBe(0);
+    });
+
+    it('round-trips baton state through save/load', () => {
+      tempStore.saveThreadCoordination('thread-1', {
+        mainBot: 'bot-a',
+        batonHolder: 'bot-b',
+        participants: ['bot-a', 'bot-b'],
+        updatedAt: 12345,
+      });
+
+      // Fresh store instance reads from disk (survives "restart").
+      const reloaded = new SessionStore(tempFile);
+      const coord = reloaded.getThreadCoordination().get('thread-1');
+      expect(coord).toEqual({
+        mainBot: 'bot-a',
+        batonHolder: 'bot-b',
+        participants: ['bot-a', 'bot-b'],
+        updatedAt: 12345,
+      });
+    });
+
+    it('removeThreadCoordination deletes one thread entry', () => {
+      tempStore.saveThreadCoordination('thread-1', { mainBot: 'a', batonHolder: 'a', participants: ['a'], updatedAt: 1 });
+      tempStore.saveThreadCoordination('thread-2', { mainBot: 'b', batonHolder: 'b', participants: ['b'], updatedAt: 2 });
+      tempStore.removeThreadCoordination('thread-1');
+      const all = tempStore.getThreadCoordination();
+      expect(all.has('thread-1')).toBe(false);
+      expect(all.has('thread-2')).toBe(true);
+    });
+
+    it('clear() preserves baton coordination (like sticky post ids)', () => {
+      tempStore.saveThreadCoordination('thread-1', { mainBot: 'a', batonHolder: 'a', participants: ['a'], updatedAt: 1 });
+      tempStore.save('p:thread-1', createTestSession({ platformId: 'p', threadId: 'thread-1' }));
+      tempStore.clear();
+      expect(tempStore.load().size).toBe(0);
+      expect(tempStore.getThreadCoordination().has('thread-1')).toBe(true);
+    });
+
+    it('old sessions.json without the key loads with baton defaults (backward compat)', () => {
+      writeFileSync(tempFile, JSON.stringify({ version: 2, sessions: {} }));
+      const legacy = new SessionStore(tempFile);
+      expect(legacy.getThreadCoordination().size).toBe(0);
+      // And it can adopt coordination going forward.
+      legacy.saveThreadCoordination('t', { mainBot: 'a', batonHolder: 'a', participants: ['a'], updatedAt: 1 });
+      expect(legacy.getThreadCoordination().get('t')?.batonHolder).toBe('a');
+    });
+  });
+
 });

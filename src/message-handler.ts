@@ -41,6 +41,18 @@ export interface MessageHandlerOptions {
 }
 
 /**
+ * A bare "stop" message used as the immediate-interrupt keyword — the chat
+ * equivalent of ESC in the Claude CLI. Matched on the whole (trimmed) message
+ * so it can't trigger on "stop" appearing inside a normal sentence. Accepts the
+ * German "stopp" spelling too. Distinct from `!stop`, which cancels/kills the
+ * session; this only interrupts the current answer and keeps the session alive.
+ */
+function isStopKeyword(content: string): boolean {
+  const c = content.trim().toLowerCase();
+  return c === 'stop' || c === 'stopp';
+}
+
+/**
  * Handle an incoming message from a platform.
  *
  * This is the core message handling logic extracted from index.ts.
@@ -98,9 +110,82 @@ export async function handleMessage(
       return;
     }
 
-    // Follow-up in active thread
-    // Use registry to check for active session directly
-    const activeSession = session.registry.findByThreadId(threadRoot);
+    // Never act on a message this bot authored itself. A bot's own posts must
+    // never affect its own session or the baton — this defends against any
+    // self-delivery/echo (observed: a bot's handoff line re-entering its own
+    // session and derailing the turn). Other bots' posts still flow through the
+    // baton gate below (that's how bot→bot handoff works).
+    if (username.toLowerCase() === client.getBotName().toLowerCase()) return;
+
+    // A human message is a fresh user impulse → reset the bot-to-bot loop budget
+    // so the bots get a full new round of autonomous exchange.
+    if (!session.isBotUsername(username)) {
+      session.noteUserActivity(threadRoot);
+    }
+
+    // --- Multi-bot baton ("Stab") gate (shared channel) ---
+    // The baton is explicit, thread-level state (SessionManager.threadCoordination)
+    // so several specialist bots can share one thread without talking over each
+    // other or looping. The baton moves the MOMENT a message @mentions a bot —
+    // authored by a human OR by a bot — not when the addressed bot finishes.
+    // Only the current holder may answer; the user never holds the baton.
+    const mentionedBot = session.resolveMentionedBot(message, platformId);
+    if (mentionedBot) {
+      const byBot = session.isBotUsername(username);
+      // Turn-gate: if the @mention was emitted by ANOTHER bot that is still
+      // mid-turn, it's not a settled handoff yet — the author is likely just
+      // narrating ("@peer let me check first…") and will keep working. Ignore
+      // it and leave the baton where it is; the author's FINAL message (posted
+      // at turn end, after its `result`) triggers the real handoff. Prevents a
+      // peer from cutting the author off mid-answer.
+      if (byBot && session.isBotProcessingInThread(threadRoot, username)) {
+        return;
+      }
+      // Loop budget: a bot→bot handoff past the configured cap pauses the
+      // autonomous exchange and hands control back to the user (prevents a
+      // runaway loop / token burn). The cap resets on the next human message.
+      // Only the addressed bot posts the notice, so it appears exactly once.
+      if (byBot && session.botHandoffLimitReached(threadRoot)) {
+        if (mentionedBot === platformId) {
+          await client.createPost(
+            `↩️ Paused the bot-to-bot exchange after ${session.getMaxBotHandoffs()} rounds — reply to keep it going.`,
+            threadRoot
+          );
+        }
+        return;
+      }
+      // A bot is @mentioned → the baton transfers to it now, regardless of who
+      // wrote the message. Every peer receiving this post calls transferBaton
+      // with the same target (idempotent), so they all agree on the holder.
+      session.transferBaton(threadRoot, mentionedBot, { byBot });
+      if (mentionedBot !== platformId) return; // addressed to a peer → I stay silent
+      // Addressed to me → I hold the baton; fall through and answer.
+    } else {
+      // No bot mentioned.
+      // Loop guard: a bot-authored message with NO @mention ends the chain (it
+      // goes to the user). This is what breaks the A↔B reply loop.
+      if (session.isBotUsername(username)) return;
+      // Plain user reply → only the baton holder answers. Seed from the legacy
+      // floor once for threads that predate explicit coordination.
+      const holder = session.getBatonHolder(threadRoot) ?? session.seedBatonFromFloor(threadRoot);
+      if (holder) {
+        if (holder !== platformId) return; // a peer holds the baton
+        // holder === me → fall through and answer
+      } else if (session.registry.hasSessionInThreadExcept(threadRoot, platformId)) {
+        // Truly unknown holder AND another bot has a session here → ambiguous;
+        // require an explicit @mention. Rare now that the baton is persisted,
+        // kept as a safety net. Single-bot threads (no peer session) fall through.
+        return;
+      }
+    }
+
+    // Follow-up in active thread.
+    // Scope the lookup to THIS platform's sessions. With multiple bots in the
+    // same channel, an unscoped `findByThreadId` let bot B's platform resolve
+    // bot A's session and relay A's (bot-authored) posts back into it — an
+    // infinite self-reply loop. Each bot only owns the threads where it was
+    // @mentioned, so a message must match a session on its own platform.
+    const activeSession = session.registry.find(platformId, threadRoot);
     if (activeSession) {
       // If message starts with @mention to someone else, track it as side conversation (if from approved user)
       const mentionMatch = message.trim().match(/^@([\w.-]+)/);
@@ -121,6 +206,19 @@ export async function handleMessage(
       const content = client.isBotMentioned(message)
         ? client.extractPrompt(message)
         : message.trim();
+
+      // Immediate "stop" kill switch: a bare "stop" message interrupts the
+      // current answer at once — the chat equivalent of pressing ESC in the
+      // Claude CLI (SIGINT), keeping the session alive. This MUST run before the
+      // follow-up path below: otherwise the text would just be queued to the
+      // agent and only act after the answer it was meant to stop. Gated to
+      // session-authorized users, like the other controls.
+      if (isStopKeyword(content)) {
+        if (session.isUserAllowedInSession(threadRoot, username)) {
+          await session.interruptSession(threadRoot, username, platformId);
+        }
+        return;
+      }
 
       // Parse command using shared parser
       const parsed = parseCommand(content);
@@ -202,13 +300,16 @@ export async function handleMessage(
       // Get any attached files (images)
       const files = post.metadata?.files;
 
-      if (content || files?.length) await session.sendFollowUp(threadRoot, content, files, username, user?.displayName);
+      if (content || files?.length) await session.sendFollowUp(threadRoot, content, files, username, user?.displayName, { triggeringPostId: post.id, platformId });
       return;
     }
 
-    // Check for paused session that can be resumed
-    // Use registry to check for persisted session directly
-    const hasPausedSession = session.registry.getPersistedByThreadId(threadRoot) !== undefined;
+    // Check for paused session that can be resumed.
+    // Same platform-scoping as the active branch: only consider a paused
+    // session that belongs to THIS platform, so one bot can't resume (or get
+    // looped into) another bot's thread in a shared channel.
+    const persistedForThread = session.registry.getPersistedByThreadId(threadRoot);
+    const hasPausedSession = persistedForThread !== undefined && persistedForThread.platformId === platformId;
     if (hasPausedSession) {
       // If message starts with @mention to someone else, ignore it (side conversation)
       const mentionMatch = message.trim().match(/^@([\w.-]+)/);

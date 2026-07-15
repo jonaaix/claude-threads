@@ -248,6 +248,14 @@ export interface PlatformClient extends EventEmitter {
   isBotMentioned(message: string): boolean;
 
   /**
+   * Character index of this bot's FIRST @mention in the message, or -1 if not
+   * mentioned. Used to pick a single winner when several bots are mentioned in
+   * one message (earliest mention wins), so exactly one bot takes the baton.
+   * @param message - Message text
+   */
+  mentionIndex(message: string): number;
+
+  /**
    * Extract the prompt from a message (remove bot mention)
    * @param message - Message text
    * @returns The message with bot mention removed

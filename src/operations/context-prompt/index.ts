@@ -17,6 +17,9 @@ export {
   getContextSelectionFromReaction,
   getThreadMessagesForContext,
   formatContextForClaude,
+  computeMissedDelta,
+  formatMissedMessagesForClaude,
+  DELTA_MSG_CAP,
   updateContextPromptPost,
 
   // High-level handlers

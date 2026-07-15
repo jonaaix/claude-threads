@@ -4,7 +4,7 @@ import { join } from 'path';
 import { createLogger } from '../utils/logger.js';
 import type { PlatformFile } from '../platform/types.js';
 import type { ContextPromptFile } from '../operations/executors/types.js';
-import type { OverheadVisibility } from '../config/types.js';
+import type { OverheadVisibility, AgentBackendKind } from '../config/types.js';
 
 const log = createLogger('persist');
 
@@ -36,6 +36,32 @@ export interface PersistedSession {
   platformId: string;            // Which platform instance (e.g., 'default', 'mattermost-main')
   threadId: string;              // Thread ID within that platform
   claudeSessionId: string;       // UUID for --session-id / --resume
+  /**
+   * Which agent backend this session runs on. Optional for backward
+   * compatibility — sessions.json files predating opencode support omit it and
+   * resume as `'claude'` (today's behavior).
+   */
+  agentBackend?: AgentBackendKind;
+  /**
+   * opencode's own session id (distinct from `claudeSessionId`). Set only for
+   * opencode-backed sessions; used to resume the same opencode session after a
+   * bot restart. Undefined → a fresh opencode session is created on resume.
+   */
+  opencodeSessionId?: string;
+  /**
+   * Epoch-ms of when this session's bot was last @mentioned in its thread.
+   * Drives multi-bot "who has the floor" so it survives a restart. Optional for
+   * backward compatibility (older records resume with it undefined).
+   */
+  lastAddressedAt?: number;
+  /**
+   * Newest thread post id already ingested into THIS bot's agent context. Used
+   * to compute the "missed messages" delta when the baton lands back on this
+   * bot after it was inactive (its handler dropped intervening messages).
+   * Persisted so the delta boundary survives a restart. Optional for backward
+   * compatibility (older records resume with it undefined → seeded on next use).
+   */
+  lastSeenPostId?: string;
   startedBy: string;             // Username who started the session
   startedByDisplayName?: string; // Display name for UI
   startedAt: string;             // ISO date
@@ -101,11 +127,26 @@ type PersistedSessionV1 = Omit<PersistedSession, 'platformId'> & {
   platformId?: string;
 }
 
+/**
+ * Persisted multi-bot baton ("Stab") coordination for one thread. Keyed by the
+ * raw threadId (peers in a shared channel see the same threadId). Explicit,
+ * thread-level state so the baton transfers deterministically at @mention time
+ * and survives a bot restart. See SessionManager.transferBaton.
+ */
+export interface PersistedThreadCoordination {
+  mainBot: string;        // platformId of the first bot addressed on the root (main chat partner)
+  batonHolder: string;    // platformId that currently holds the baton (only this bot may answer)
+  participants: string[]; // every platformId that has held the baton in this thread
+  updatedAt: number;      // epoch-ms of the last baton transfer
+  botHops?: number;       // consecutive bot→bot handoffs since the last human message (optional; older records default to 0)
+}
+
 interface SessionStoreData {
   version: number;
   sessions: Record<string, PersistedSession>;
   stickyPostIds?: Record<string, string>;  // platformId -> postId
   platformEnabledState?: Record<string, boolean>;  // platformId -> enabled (defaults to true if not set)
+  threadCoordination?: Record<string, PersistedThreadCoordination>;  // raw threadId -> baton state
 }
 
 const STORE_VERSION = 2; // v2: Added platformId for multi-platform support
@@ -340,9 +381,52 @@ export class SessionStore {
    */
   clear(): void {
     const data = this.loadRaw();
-    // Preserve sticky post IDs when clearing sessions
-    this.writeAtomic({ version: STORE_VERSION, sessions: {}, stickyPostIds: data.stickyPostIds });
+    // Preserve sticky post IDs and baton coordination when clearing sessions
+    this.writeAtomic({
+      version: STORE_VERSION,
+      sessions: {},
+      stickyPostIds: data.stickyPostIds,
+      threadCoordination: data.threadCoordination,
+    });
     log.debug('Cleared all sessions');
+  }
+
+  // ---------------------------------------------------------------------------
+  // Multi-bot baton ("Stab") coordination
+  // ---------------------------------------------------------------------------
+
+  /**
+   * All persisted baton coordination entries, keyed by raw threadId.
+   * Defensive default of empty map for files predating this feature.
+   */
+  getThreadCoordination(): Map<string, PersistedThreadCoordination> {
+    const data = this.loadRaw();
+    return new Map(Object.entries(data.threadCoordination || {}));
+  }
+
+  /**
+   * Persist the baton state for a thread. Callers only invoke this when the
+   * value actually changed, so writes stay comparable to the per-result
+   * persistSession cadence even with N peers receiving the same post.
+   */
+  saveThreadCoordination(threadId: string, coord: PersistedThreadCoordination): void {
+    const data = this.loadRaw();
+    if (!data.threadCoordination) {
+      data.threadCoordination = {};
+    }
+    data.threadCoordination[threadId] = coord;
+    this.writeAtomic(data);
+  }
+
+  /**
+   * Remove baton state for a thread (e.g. when the thread has no session left).
+   */
+  removeThreadCoordination(threadId: string): void {
+    const data = this.loadRaw();
+    if (data.threadCoordination && data.threadCoordination[threadId]) {
+      delete data.threadCoordination[threadId];
+      this.writeAtomic(data);
+    }
   }
 
   // ---------------------------------------------------------------------------

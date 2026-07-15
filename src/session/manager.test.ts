@@ -4,6 +4,8 @@
 
 import { describe, test, expect, beforeEach, mock } from 'bun:test';
 import { SessionManager } from './manager.js';
+import { SessionStore } from '../persistence/session-store.js';
+import { MattermostClient } from '../platform/mattermost/client.js';
 import type { PlatformClient, PlatformPost } from '../platform/index.js';
 import { createMockFormatter } from '../test-utils/mock-formatter.js';
 import { setLogHandler } from '../utils/logger.js';
@@ -575,6 +577,58 @@ describe('SessionManager', () => {
     });
   });
 
+  describe('sendFollowUp platform scoping (multi-bot echo fix)', () => {
+    // Two bots share one raw threadId. sendFollowUp MUST target the session on
+    // the given platform — the unscoped lookup returned whichever was created
+    // first, misrouting a peer's forwarded handoff back into the wrong bot's
+    // session (the observed self-echo loop).
+    function twoSessionsSameThread() {
+      const mk = (pid: string) => ({
+        platformId: pid, threadId: 'T', sessionId: `${pid}:T`,
+        // isRunning=false makes sendFollowUp return right after SELECTING the
+        // session, so we can assert which one was chosen without the heavy
+        // lifecycle path running.
+        claude: { isRunning: mock(() => false) },
+      });
+      const a = mk('pa');
+      const b = mk('pb');
+      (manager.registry as any).sessions.set('pa:T', a);
+      (manager.registry as any).sessions.set('pb:T', b);
+      return { a, b };
+    }
+
+    test('routes to the session on the given platform', async () => {
+      const { a, b } = twoSessionsSameThread();
+      await manager.sendFollowUp('T', 'hi', undefined, undefined, undefined, { platformId: 'pb' });
+      expect((b.claude.isRunning as any)).toHaveBeenCalled();
+      expect((a.claude.isRunning as any)).not.toHaveBeenCalled();
+    });
+
+    test('unscoped call (no platformId) keeps legacy first-match behavior', async () => {
+      const { a, b } = twoSessionsSameThread();
+      await manager.sendFollowUp('T', 'hi');
+      expect((a.claude.isRunning as any)).toHaveBeenCalled();
+      expect((b.claude.isRunning as any)).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('isBotProcessingInThread', () => {
+    const botPlatform = (name: string) => ({ getBotName: () => name }) as unknown as PlatformClient;
+
+    test('true when the named bot has a processing session in the thread', () => {
+      injectSession(manager, botPlatform('bot-x'), 'T', { isProcessing: true });
+      expect(manager.isBotProcessingInThread('T', 'bot-x')).toBe(true);
+      expect(manager.isBotProcessingInThread('T', 'BOT-X')).toBe(true); // case-insensitive
+    });
+
+    test('false when the bot session is idle, the bot is absent, or the thread is unknown', () => {
+      injectSession(manager, botPlatform('bot-x'), 'T', { isProcessing: false });
+      expect(manager.isBotProcessingInThread('T', 'bot-x')).toBe(false);
+      expect(manager.isBotProcessingInThread('T', 'someone-else')).toBe(false);
+      expect(manager.isBotProcessingInThread('unknown-thread', 'bot-x')).toBe(false);
+    });
+  });
+
   describe('isUserAllowedInSession', () => {
     test('returns true for session owner', () => {
       injectSession(manager, platform as unknown as PlatformClient, 'thread-X', {
@@ -746,6 +800,7 @@ describe('SessionManager', () => {
         'needsContextPromptOnNextMessage', 'lifecyclePostId', 'isPaused', 'sessionTitle',
         'sessionDescription', 'sessionTags', 'pullRequestUrl', 'messageCount',
         'resumeFailCount', 'claudeAccountId', 'sessionHeaderMode',
+        'agentBackend', 'opencodeSessionId', 'lastAddressedAt', 'lastSeenPostId',
       ]);
       expect(new Set(Object.keys(written))).toEqual(expectedKeys);
 
@@ -788,6 +843,211 @@ describe('SessionManager', () => {
       expect(written.tasksCompleted).toBe(false);
       expect(written.tasksMinimized).toBe(false);
       expect(written.pendingContextPrompt).toBeUndefined();
+    });
+  });
+
+  describe('multi-bot mention routing (otherBotMentioned)', () => {
+    // Regression: with two bots in one channel, @mentioning bot A must NOT make
+    // bot B answer. B's addressing gate returns early iff otherBotMentioned() is
+    // true from B's perspective. Uses real MattermostClient mention detection.
+    function twoBotManager() {
+      const m = new SessionManager('/test', 'default', false, 'off', testSessionsPath);
+      const mk = (id: string, botName: string) =>
+        new MattermostClient({
+          id, type: 'mattermost', displayName: id,
+          url: 'https://x', token: `t-${id}`, channelId: 'chan-1', botName,
+          allowedUsers: [], skipPermissions: false,
+        } as unknown as ConstructorParameters<typeof MattermostClient>[0]);
+      m.addPlatform('mattermost', mk('mattermost', 'claude_bot_jg') as unknown as PlatformClient, undefined, 'claude');
+      m.addPlatform('mattermost-lmstudio', mk('mattermost-lmstudio', 'peer-bot-2') as unknown as PlatformClient, undefined, 'claude');
+      return m;
+    }
+
+    test('@mentioning one bot flags the OTHER bot to stay silent', () => {
+      const m = twoBotManager();
+      // "@claude_bot_jg hey" — from peer-bot-2's platform, the other bot IS mentioned → true.
+      expect(m.otherBotMentioned('@claude_bot_jg hey', 'mattermost-lmstudio')).toBe(true);
+      // From claude's own platform, no OTHER bot is mentioned → false (claude answers).
+      expect(m.otherBotMentioned('@claude_bot_jg hey', 'mattermost')).toBe(false);
+    });
+
+    test('a bold-wrapped mention still flags the other bot (handoff robustness)', () => {
+      const m = twoBotManager();
+      expect(m.otherBotMentioned('**@claude_bot_jg** your turn', 'mattermost-lmstudio')).toBe(true);
+    });
+
+    test('isBotUsername recognizes every registered bot account', () => {
+      const m = twoBotManager();
+      expect(m.isBotUsername('claude_bot_jg')).toBe(true);
+      expect(m.isBotUsername('peer-bot-2')).toBe(true);
+      expect(m.isBotUsername('alice')).toBe(false);
+    });
+  });
+
+  describe('multi-bot baton ("Stab") coordination', () => {
+    // Two peer bots sharing one channel (same url + channelId) plus one bot in a
+    // DIFFERENT channel, to exercise peer-scoping. Each gets its own sessions
+    // file so persistence assertions don't cross-contaminate.
+    function batonManager() {
+      const sessionsPath = path.join(os.tmpdir(), `baton-${Date.now()}-${Math.floor(performance.now())}.json`);
+      const m = new SessionManager('/test', 'default', false, 'off', sessionsPath);
+      const mk = (id: string, botName: string, channelId: string) =>
+        new MattermostClient({
+          id, type: 'mattermost', displayName: id,
+          url: 'https://x', token: `t-${id}`, channelId, botName,
+          allowedUsers: [], skipPermissions: false,
+        } as unknown as ConstructorParameters<typeof MattermostClient>[0]);
+      m.addPlatform('bot-a', mk('bot-a', 'claude_a', 'chan-1') as unknown as PlatformClient, undefined, 'claude');
+      m.addPlatform('bot-b', mk('bot-b', 'claude_b', 'chan-1') as unknown as PlatformClient, undefined, 'claude');
+      // Different channel → NOT a peer of bot-a/bot-b.
+      m.addPlatform('bot-c', mk('bot-c', 'claude_c', 'chan-2') as unknown as PlatformClient, undefined, 'claude');
+      return { m, sessionsPath };
+    }
+
+    describe('resolveMentionedBot', () => {
+      test('returns self when this bot is @mentioned', () => {
+        const { m } = batonManager();
+        expect(m.resolveMentionedBot('@claude_a hi', 'bot-a')).toBe('bot-a');
+      });
+
+      test('returns the peer when a peer bot is @mentioned', () => {
+        const { m } = batonManager();
+        expect(m.resolveMentionedBot('@claude_b please help', 'bot-a')).toBe('bot-b');
+      });
+
+      test('returns undefined for a plain message (no bot mentioned)', () => {
+        const { m } = batonManager();
+        expect(m.resolveMentionedBot('just a normal message', 'bot-a')).toBeUndefined();
+      });
+
+      test('multiple bots mentioned: the FIRST in the text wins (one winner)', () => {
+        const { m } = batonManager();
+        // "@claude_a @claude_b" → claude_a is first → bot-a, regardless of caller.
+        expect(m.resolveMentionedBot('@claude_a @claude_b both of you', 'bot-a')).toBe('bot-a');
+        expect(m.resolveMentionedBot('@claude_a @claude_b both of you', 'bot-b')).toBe('bot-a');
+        // Reversed order in the text → the peer (bot-b) wins, even from bot-a's view.
+        expect(m.resolveMentionedBot('@claude_b @claude_a both of you', 'bot-a')).toBe('bot-b');
+        expect(m.resolveMentionedBot('@claude_b @claude_a both of you', 'bot-b')).toBe('bot-b');
+      });
+
+      test('every peer computes the SAME winner for a multi-mention message', () => {
+        const { m } = batonManager();
+        const msg = 'hey @claude_b can you and @claude_a look at this';
+        // bot-b mentioned first → all three bots agree on bot-b.
+        expect(m.resolveMentionedBot(msg, 'bot-a')).toBe('bot-b');
+        expect(m.resolveMentionedBot(msg, 'bot-b')).toBe('bot-b');
+        expect(m.resolveMentionedBot(msg, 'bot-c')).toBeUndefined(); // bot-c is in another channel
+      });
+
+      test('does not resolve a bot in a different channel (peer-scoped)', () => {
+        const { m } = batonManager();
+        // bot-c is @mentioned, but it is not a peer of bot-a (different channel).
+        expect(m.resolveMentionedBot('@claude_c hey', 'bot-a')).toBeUndefined();
+      });
+    });
+
+    describe('transferBaton / getBatonHolder', () => {
+      test('transfers the baton and reports the new holder', () => {
+        const { m } = batonManager();
+        expect(m.getBatonHolder('thread-1')).toBeUndefined();
+        m.transferBaton('thread-1', 'bot-a');
+        expect(m.getBatonHolder('thread-1')).toBe('bot-a');
+        m.transferBaton('thread-1', 'bot-b');
+        expect(m.getBatonHolder('thread-1')).toBe('bot-b');
+      });
+
+      test('persists baton state (survives a fresh store read)', () => {
+        const { m, sessionsPath } = batonManager();
+        m.transferBaton('thread-1', 'bot-a');
+        const persisted = new SessionStore(sessionsPath).getThreadCoordination().get('thread-1');
+        expect(persisted?.batonHolder).toBe('bot-a');
+        expect(persisted?.mainBot).toBe('bot-a'); // set on first touch
+      });
+
+      test('keeps mainBot fixed and accumulates participants across transfers', () => {
+        const { m, sessionsPath } = batonManager();
+        m.transferBaton('thread-1', 'bot-a');
+        m.transferBaton('thread-1', 'bot-b');
+        m.transferBaton('thread-1', 'bot-a'); // baton returns to a
+        expect(m.getBatonHolder('thread-1')).toBe('bot-a');
+        const coord = new SessionStore(sessionsPath).getThreadCoordination().get('thread-1');
+        expect(coord?.mainBot).toBe('bot-a'); // first-touch main is preserved
+        expect([...(coord?.participants ?? [])].sort()).toEqual(['bot-a', 'bot-b']);
+      });
+    });
+
+    describe('seedBatonFromFloor', () => {
+      test('returns undefined and sets nothing when no session exists in the thread', () => {
+        const { m } = batonManager();
+        expect(m.seedBatonFromFloor('thread-x')).toBeUndefined();
+        expect(m.getBatonHolder('thread-x')).toBeUndefined();
+      });
+
+      test('returns the existing explicit holder without re-deriving', () => {
+        const { m } = batonManager();
+        m.transferBaton('thread-1', 'bot-b');
+        expect(m.seedBatonFromFloor('thread-1')).toBe('bot-b');
+      });
+    });
+
+    describe('peerBotsPresent', () => {
+      test('true for a bot that shares its channel with a peer', () => {
+        const { m } = batonManager();
+        expect(m.peerBotsPresent('bot-a')).toBe(true);
+      });
+
+      test('false for a bot alone in its channel', () => {
+        const { m } = batonManager();
+        expect(m.peerBotsPresent('bot-c')).toBe(false);
+      });
+    });
+
+    describe('bot-to-bot loop budget', () => {
+      // These operate purely on the coordination map + store, so a bare manager
+      // (no platforms) is enough. The 11th ctor arg is maxBotHandoffs.
+      const mgrWithCap = (cap: number) => new SessionManager(
+        '/test', 'default', false, 'off',
+        path.join(os.tmpdir(), `baton-cap-${Date.now()}-${Math.floor(performance.now())}-${cap}.json`),
+        true, 30, undefined, undefined, false, cap,
+      );
+
+      test('byBot handoffs increment the hop counter; seeds/user transfers do not', () => {
+        const m = mgrWithCap(25);
+        m.transferBaton('T', 'a');                    // seed, not a bot handoff
+        expect(m.getBotHops('T')).toBe(0);
+        m.transferBaton('T', 'b', { byBot: true });
+        m.transferBaton('T', 'a', { byBot: true });
+        expect(m.getBotHops('T')).toBe(2);
+      });
+
+      test('noteUserActivity resets the hop counter', () => {
+        const m = mgrWithCap(25);
+        m.transferBaton('T', 'a', { byBot: true });
+        m.transferBaton('T', 'b', { byBot: true });
+        expect(m.getBotHops('T')).toBe(2);
+        m.noteUserActivity('T');
+        expect(m.getBotHops('T')).toBe(0);
+      });
+
+      test('botHandoffLimitReached fires at the cap and clears after user activity', () => {
+        const m = mgrWithCap(2);
+        m.transferBaton('T', 'a');
+        expect(m.botHandoffLimitReached('T')).toBe(false);
+        m.transferBaton('T', 'b', { byBot: true }); // 1
+        expect(m.botHandoffLimitReached('T')).toBe(false);
+        m.transferBaton('T', 'a', { byBot: true }); // 2 → reached
+        expect(m.botHandoffLimitReached('T')).toBe(true);
+        m.noteUserActivity('T');
+        expect(m.botHandoffLimitReached('T')).toBe(false);
+      });
+
+      test('a cap of 0 disables the limit entirely', () => {
+        const m = mgrWithCap(0);
+        m.transferBaton('T', 'a', { byBot: true });
+        m.transferBaton('T', 'b', { byBot: true });
+        expect(m.getMaxBotHandoffs()).toBe(0);
+        expect(m.botHandoffLimitReached('T')).toBe(false);
+      });
     });
   });
 });

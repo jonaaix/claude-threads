@@ -128,10 +128,25 @@ describe('MattermostClient pure helpers', () => {
     expect(c.isBotMentioned('@botXv2 hello')).toBe(false);
   });
 
+  it('isBotMentioned matches mentions wrapped in markdown/punctuation', () => {
+    const c = makeClient({ botName: 'peer-bot-2' });
+    // Regression: bots (esp. small models) bold their mentions — these must
+    // still notify the target, or the handoff (and loop-prevention) mis-fires.
+    expect(c.isBotMentioned('**@peer-bot-2** your turn')).toBe(true);
+    expect(c.isBotMentioned('(@peer-bot-2)')).toBe(true);
+    expect(c.isBotMentioned('ok @peer-bot-2, go ahead')).toBe(true);
+    expect(c.isBotMentioned('handoff to @peer-bot-2.')).toBe(true);
+    // Still excludes email-like (preceded by a word char) and longer names.
+    expect(c.isBotMentioned('mail foo@peer-bot-2.com')).toBe(false);
+    expect(c.isBotMentioned('@peer-bot-2x hi')).toBe(false);
+  });
+
   it('extractPrompt strips bot mention and trims', () => {
     const c = makeClient({ botName: 'claude' });
     expect(c.extractPrompt('@claude write a test')).toBe('write a test');
     expect(c.extractPrompt('hey @claude fix this')).toBe('hey  fix this'.trim());
+    // Also strips a bold-wrapped mention (leaves the surrounding ** — harmless).
+    expect(c.extractPrompt('**@claude** do it')).toContain('do it');
   });
 
   it('getMcpConfig exposes the platform credentials', () => {
