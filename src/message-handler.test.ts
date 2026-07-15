@@ -32,6 +32,7 @@ function createMockPlatform(botName = 'claude-bot') {
     extractPrompt: mock((message: string) => message.replace(new RegExp(`@${botName}\\s*`, 'gi'), '').trim()),
     isUserAllowed: mock((username: string) => username === 'allowed-user' || username === 'admin'),
     getBotName: mock(() => botName),
+    getPostPermalink: mock((post: PlatformPost) => `https://mm.test/pl/${post.id}`),
     getFormatter: () => createMockFormatter(),
     disconnect: mock(() => {}),
     posts,
@@ -395,7 +396,17 @@ describe('handleMessage', () => {
 
       await handleMessage(client, session, post, user, options);
 
-      expect(session.sendFollowUp).toHaveBeenCalledWith('thread1', 'please help me with this code', undefined, 'allowed-user', 'User', { triggeringPostId: 'post1', platformId: 'test-platform' });
+      // Content carries this message's own permalink (a handle on THIS message,
+      // not the thread root) plus the triggering post id / platform.
+      expect(session.sendFollowUp).toHaveBeenCalledWith(
+        'thread1',
+        expect.stringContaining('please help me with this code'),
+        undefined, 'allowed-user', 'User',
+        { triggeringPostId: 'post1', platformId: 'test-platform' },
+      );
+      const sentContent = (session.sendFollowUp as any).mock.calls[0][1] as string;
+      expect(sentContent).toContain('message permalink');
+      expect(sentContent).toContain('https://mm.test/pl/post1');
     });
 
     test('a bare "stop" interrupts the current answer (kill switch), does not follow up', async () => {
@@ -569,7 +580,7 @@ describe('handleMessage', () => {
 
       await handleMessage(client, session, post, user, options);
 
-      expect(session.sendFollowUp).toHaveBeenCalledWith('thread1', 'please continue', undefined, 'allowed-user', 'User', { triggeringPostId: 'post1', platformId: 'test-platform' });
+      expect(session.sendFollowUp).toHaveBeenCalledWith('thread1', expect.stringContaining('please continue'), undefined, 'allowed-user', 'User', { triggeringPostId: 'post1', platformId: 'test-platform' });
     });
 
     test('when quiet mode off (default), responds to a non-mention reply', async () => {
@@ -591,7 +602,7 @@ describe('handleMessage', () => {
 
       await handleMessage(client, session, post, user, options);
 
-      expect(session.sendFollowUp).toHaveBeenCalledWith('thread1', 'keep going please', undefined, 'allowed-user', 'User', { triggeringPostId: 'post1', platformId: 'test-platform' });
+      expect(session.sendFollowUp).toHaveBeenCalledWith('thread1', expect.stringContaining('keep going please'), undefined, 'allowed-user', 'User', { triggeringPostId: 'post1', platformId: 'test-platform' });
     });
 
     test('when quiet mode on, a pending worktree-prompt reply is still handled (bypasses the gate)', async () => {
@@ -1992,7 +2003,7 @@ describe('handleMessage', () => {
 
       expect(session.handleWorktreeBranchResponse).toHaveBeenCalled();
       // Should fall through to sendFollowUp
-      expect(session.sendFollowUp).toHaveBeenCalledWith('thread1', 'not a valid branch response', undefined, 'allowed-user', 'User', { triggeringPostId: 'post1', platformId: 'test-platform' });
+      expect(session.sendFollowUp).toHaveBeenCalledWith('thread1', expect.stringContaining('not a valid branch response'), undefined, 'allowed-user', 'User', { triggeringPostId: 'post1', platformId: 'test-platform' });
     });
 
     test('does not handle branch response for unauthorized user', async () => {
@@ -2264,7 +2275,7 @@ describe('handleMessage', () => {
 
       await handleMessage(client, session, mkPost('a normal follow-up'), { id: 'u1', username: 'allowed-user' }, options);
 
-      expect(session.sendFollowUp).toHaveBeenCalledWith('thread1', 'a normal follow-up', undefined, 'allowed-user', undefined, { triggeringPostId: 'p', platformId: 'test-platform' });
+      expect(session.sendFollowUp).toHaveBeenCalledWith('thread1', expect.stringContaining('a normal follow-up'), undefined, 'allowed-user', undefined, { triggeringPostId: 'p', platformId: 'test-platform' });
     });
   });
 });
