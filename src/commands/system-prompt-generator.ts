@@ -200,6 +200,8 @@ export function buildPeerBotContext(peerBots: PeerBotInfo[]): string {
 Other AI assistants share this thread and can be brought in:
 ${list}
 
+**React first, then reply.** For every user message you take up (you hold the baton), call \`react_to_post\` with emoji name \`eyes\` (👀, minimum) before answering — the url is the message's \`[message permalink: <url>]\` tag.
+
 **How to hand off to one of them — read carefully:**
 - Write its name as **plain text** \`@${example}\` — nothing around it. This EXACT literal form is the only thing that reaches it.
 - Do NOT bold it, italicize it, put it in code/backticks, or add a space after \`@\`. All of these FAIL to notify:
