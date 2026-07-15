@@ -77,6 +77,31 @@ function agentBackendChoiceIndex(kind: AgentBackendKind): number {
 }
 
 /**
+ * Optional per-platform model override. The accepted format depends on the
+ * chosen backend, so the help text adapts: opencode wants `provider/model`
+ * (like `opencode.json`), Claude wants a short name or model id. Empty → the
+ * backend's own default. Shared by the Mattermost and Slack wizards.
+ */
+async function promptForModel(agentBackend: AgentBackendKind, initial: string): Promise<string> {
+  console.log('');
+  if (agentBackend === 'opencode') {
+    console.log(dim('  Model (optional): opencode\'s "provider/model" notation — the same as'));
+    console.log(dim('  opencode.json, e.g. "anthropic/claude-sonnet-4-5" or'));
+    console.log(dim('  "openrouter/anthropic/claude-3.5-sonnet". Empty → opencode.json default.'));
+  } else {
+    console.log(dim('  Model (optional): a short name like "sonnet"/"opus" or a full model id.'));
+    console.log(dim('  Empty → the backend default.'));
+  }
+  const { model } = await prompts({
+    type: 'text',
+    name: 'model',
+    message: 'Model',
+    initial,
+  }, { onCancel });
+  return (model || '').trim();
+}
+
+/**
  * One picker drives both `sessionHeader` and `stickyMessage` per platform —
  * the common case is "I want the bot to be more / less chatty in this
  * channel," not "make the per-thread header `minimal` but the channel
@@ -1095,6 +1120,7 @@ async function setupMattermostPlatform(
   let lastChannelId = existingMattermost?.channelId || '';
   let lastBotName = existingMattermost?.botName || 'claude-code';
   let lastDescription = existingMattermost?.description || '';
+  let lastModel = typeof existingMattermost?.model === 'string' ? existingMattermost.model : '';
   let lastAllowedUsers = existingMattermost?.allowedUsers?.join(',') || '';
   // New configs default to `auto` (the onboarding recommendation). Existing
   // configs keep whatever they had — never silently change an operator's
@@ -1260,6 +1286,9 @@ async function setupMattermostPlatform(
     }, { onCancel });
     agentBackend = agent;
 
+    // Optional model override for the chosen backend.
+    lastModel = await promptForModel(agentBackend, lastModel);
+
     // Now ask about permission mode (after user access is settled).
     // Applies to the Claude backend only; opencode ignores it.
     const { permissionMode } = await prompts({
@@ -1377,6 +1406,8 @@ async function setupMattermostPlatform(
       ...(lastDescription ? { description: lastDescription } : {}),
       // Only written when non-default so Claude configs stay minimal.
       ...(agentBackend !== DEFAULT_AGENT_BACKEND ? { agent: agentBackend } : {}),
+      // Only written when set — keeps configs minimal.
+      ...(lastModel ? { model: lastModel } : {}),
       // Verbosity persistence:
       //  - Split config (user had different values per surface, prompt was
       //    skipped): preserve both originals verbatim.
@@ -1566,6 +1597,7 @@ async function setupSlackPlatform(
   let lastChannelId = existingSlack?.channelId || '';
   let lastBotName = existingSlack?.botName || 'claude';
   let lastDescription = existingSlack?.description || '';
+  let lastModel = typeof existingSlack?.model === 'string' ? existingSlack.model : '';
   let lastAllowedUsers = existingSlack?.allowedUsers?.join(',') || '';
   let lastPermissionMode: PermissionMode = existingSlack
     ? resolvePermissionMode({
@@ -1732,6 +1764,9 @@ async function setupSlackPlatform(
     }, { onCancel });
     agentBackend = agent;
 
+    // Optional model override for the chosen backend.
+    lastModel = await promptForModel(agentBackend, lastModel);
+
     // Now ask about permission mode (after user access is settled).
     // Applies to the Claude backend only; opencode ignores it.
     const { permissionMode } = await prompts({
@@ -1853,6 +1888,8 @@ async function setupSlackPlatform(
       ...(lastDescription ? { description: lastDescription } : {}),
       // Only written when non-default so Claude configs stay minimal.
       ...(agentBackend !== DEFAULT_AGENT_BACKEND ? { agent: agentBackend } : {}),
+      // Only written when set — keeps configs minimal.
+      ...(lastModel ? { model: lastModel } : {}),
       // Same persistence rules as Mattermost (split → preserve, default →
       // omit, non-default → write both with same value).
       ...(hasSplitVerbosity
