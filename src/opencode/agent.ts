@@ -28,6 +28,31 @@ import { OpencodeEventTranslator } from './event-translator.js';
 import { opencodeHub } from './server.js';
 import { createLogger } from '../utils/logger.js';
 
+/** A concrete opencode model selection, as the SDK's prompt body expects it. */
+export interface OpencodeModel {
+  providerID: string;
+  modelID: string;
+}
+
+/**
+ * Parse an opencode model spec in opencode's own `provider/model` notation
+ * (the same value used in `opencode.json`, e.g. `anthropic/claude-sonnet-4-5`
+ * or `openrouter/anthropic/claude-3.5-sonnet`) into `{ providerID, modelID }`.
+ *
+ * Split on the FIRST `/` so the provider is the leading segment and the model
+ * id keeps any remaining slashes (openrouter-style nested ids). Returns
+ * undefined for an empty/omitted spec or one without a usable `provider/model`
+ * shape — the caller then leaves `model` unset and opencode falls back to its
+ * own default (`opencode.json`).
+ */
+export function parseOpencodeModel(spec: string | undefined): OpencodeModel | undefined {
+  if (!spec) return undefined;
+  const trimmed = spec.trim();
+  const slash = trimmed.indexOf('/');
+  if (slash <= 0 || slash === trimmed.length - 1) return undefined;
+  return { providerID: trimmed.slice(0, slash), modelID: trimmed.slice(slash + 1) };
+}
+
 export interface OpencodeAgentOptions {
   /** Working directory the opencode session operates in. */
   workingDir: string;
@@ -42,6 +67,12 @@ export interface OpencodeAgentOptions {
   opencodeSessionId?: string;
   /** Human-readable session title shown in opencode. */
   title?: string;
+  /**
+   * Model to use for this session, overriding opencode's own default. Passed on
+   * every turn's prompt body. Undefined → opencode picks the model from its own
+   * config (`opencode.json`).
+   */
+  model?: OpencodeModel;
 }
 
 export class OpencodeAgent extends EventEmitter implements AgentBackend {
@@ -154,6 +185,7 @@ export class OpencodeAgent extends EventEmitter implements AgentBackend {
           body: {
             parts: [{ type: 'text', text: content }],
             ...(this.options.appendSystemPrompt ? { system: this.options.appendSystemPrompt } : {}),
+            ...(this.options.model ? { model: this.options.model } : {}),
           },
         });
         if (error) {

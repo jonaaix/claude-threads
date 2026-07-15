@@ -21,7 +21,7 @@ import type { PlatformClient, PlatformFile } from '../platform/index.js';
 import type { ClaudeCliOptions, ClaudeEvent, RateLimitHit } from '../claude/cli.js';
 import { ClaudeCli } from '../claude/cli.js';
 import type { AgentBackend } from '../agent/backend.js';
-import { OpencodeAgent } from '../opencode/agent.js';
+import { OpencodeAgent, parseOpencodeModel } from '../opencode/agent.js';
 import { cooldownDeadline } from '../claude/rate-limit-detector.js';
 import type { PersistedSession } from '../persistence/session-store.js';
 import { createThreadLogger } from '../persistence/thread-logger.js';
@@ -1039,6 +1039,9 @@ export async function startSession(
         logSessionId: sessionId,
         appendSystemPrompt: systemPrompt,
         title: `claude-threads: ${options.prompt?.slice(0, 60) ?? 'session'}`,
+        // Per-platform `model` (opencode notation "provider/model"); undefined
+        // → opencode uses its own default from opencode.json.
+        model: parseOpencodeModel(ctx.ops.getPlatformModel(platformId)),
       })
     : new ClaudeCli(cliOptions);
 
@@ -1376,6 +1379,7 @@ export async function resumeSession(
         appendSystemPrompt,
         opencodeSessionId: state.opencodeSessionId,
         title: state.sessionTitle ?? 'claude-threads session',
+        model: parseOpencodeModel(ctx.ops.getPlatformModel(state.platformId)),
       })
     : new ClaudeCli(cliOptions);
 

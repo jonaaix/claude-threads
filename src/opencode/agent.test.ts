@@ -10,7 +10,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import type { Event } from '@opencode-ai/sdk';
-import { OpencodeAgent } from './agent.js';
+import { OpencodeAgent, parseOpencodeModel } from './agent.js';
 import { opencodeHub } from './server.js';
 
 // A completed opencode text part → should translate to one assistant event.
@@ -133,6 +133,24 @@ describe('OpencodeAgent', () => {
       query: { directory: '/repo' },
       body: { parts: [{ type: 'text', text: 'do the thing' }] },
     });
+    // No model configured → body must not pin a model (opencode uses its default).
+    expect((stub.promptCalls[0] as { body: Record<string, unknown> }).body.model).toBeUndefined();
+  });
+
+  it('includes the configured model in the prompt body when set', async () => {
+    const agent = new OpencodeAgent({
+      workingDir: '/repo',
+      model: { providerID: 'anthropic', modelID: 'claude-sonnet-4-5' },
+    });
+    agent.start();
+    await ready(agent);
+
+    agent.sendMessage('do the thing');
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(stub.promptCalls[0]).toMatchObject({
+      body: { model: { providerID: 'anthropic', modelID: 'claude-sonnet-4-5' } },
+    });
   });
 
   it('aborts the session and emits exit once on kill', async () => {
@@ -165,5 +183,33 @@ describe('OpencodeAgent', () => {
     expect(exits).toBe(1);
     expect(agent.isPermanentFailure()).toBe(true);
     expect(agent.getPermanentFailureReason()).toContain('could not be started');
+  });
+});
+
+describe('parseOpencodeModel', () => {
+  it('splits provider/model on the first slash', () => {
+    expect(parseOpencodeModel('anthropic/claude-sonnet-4-5')).toEqual({
+      providerID: 'anthropic',
+      modelID: 'claude-sonnet-4-5',
+    });
+  });
+
+  it('keeps remaining slashes in the model id (openrouter-style nested ids)', () => {
+    expect(parseOpencodeModel('openrouter/anthropic/claude-3.5-sonnet')).toEqual({
+      providerID: 'openrouter',
+      modelID: 'anthropic/claude-3.5-sonnet',
+    });
+  });
+
+  it('trims surrounding whitespace', () => {
+    expect(parseOpencodeModel('  openai/gpt-5  ')).toEqual({ providerID: 'openai', modelID: 'gpt-5' });
+  });
+
+  it('returns undefined for empty/omitted or non provider/model specs', () => {
+    expect(parseOpencodeModel(undefined)).toBeUndefined();
+    expect(parseOpencodeModel('')).toBeUndefined();
+    expect(parseOpencodeModel('sonnet')).toBeUndefined();      // no slash → no provider
+    expect(parseOpencodeModel('/claude')).toBeUndefined();     // empty provider
+    expect(parseOpencodeModel('anthropic/')).toBeUndefined();  // empty model id
   });
 });

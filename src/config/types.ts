@@ -267,9 +267,14 @@ export interface PlatformInstanceConfig {
    */
   agent?: AgentBackendKind;
   /**
-   * Model override for this platform's sessions. For the Claude backend it's
-   * passed as `--model` (e.g. "sonnet", "opus", or a full model id). Undefined
-   * lets the backend use its own default. (opencode uses its own config/model.)
+   * Model override for this platform's sessions. Format depends on the backend:
+   * - Claude (`agent: claude`): passed as `--model` — a short name ("sonnet",
+   *   "opus") or a full model id.
+   * - opencode (`agent: opencode`): opencode's `provider/model` notation, the
+   *   same value `opencode.json` uses (e.g. "anthropic/claude-sonnet-4-5" or
+   *   "openrouter/anthropic/claude-3.5-sonnet"). It is sent on every turn and
+   *   overrides opencode's own default.
+   * Undefined → the backend uses its own default (for opencode, `opencode.json`).
    */
   model?: string;
   /**
