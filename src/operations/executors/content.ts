@@ -127,15 +127,15 @@ export class ContentExecutor extends BaseExecutor<ContentState> {
    * Execute an append content operation.
    */
   async executeAppend(op: AppendContentOp, _ctx: ExecutorContext): Promise<void> {
-    // Tool output needs spacing before and after to separate from text
-    if (op.isToolOutput && this.state.pendingContent.length > 0) {
-      if (!this.state.pendingContent.endsWith('\n\n')) {
-        if (this.state.pendingContent.endsWith('\n')) {
-          this.state.pendingContent += '\n';
-        } else {
-          this.state.pendingContent += '\n\n';
-        }
-      }
+    // Separate this append from existing pending content with a blank line so
+    // consecutive segments render as distinct paragraphs. This matters for any
+    // backend that emits several assistant events per turn: opencode sends
+    // reasoning and the answer as SEPARATE events, and without a separator the
+    // answer was concatenated onto the "> 💭 …" reasoning blockquote and got
+    // absorbed into the quote (markdown lazy continuation). Tool output keeps
+    // its extra trailing blank line below.
+    if (this.state.pendingContent.length > 0 && !this.state.pendingContent.endsWith('\n\n')) {
+      this.state.pendingContent += this.state.pendingContent.endsWith('\n') ? '\n' : '\n\n';
     }
     this.state.pendingContent += op.content;
 

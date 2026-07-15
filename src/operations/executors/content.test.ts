@@ -130,12 +130,16 @@ describe('ContentExecutor', () => {
       expect(executor.getState().pendingContent).toBe('Hello');
     });
 
-    it('accumulates multiple appends', async () => {
+    it('separates distinct appends with a blank line (segments = paragraphs)', async () => {
+      // Consecutive append ops are distinct segments (e.g. an opencode reasoning
+      // part then the answer part), so they render as separate paragraphs — a
+      // blank line between them prevents the answer being absorbed into a leading
+      // "> 💭 …" reasoning blockquote.
       const ctx = getContext();
       await executor.executeAppend(createAppendContentOp('test', 'Hello '), ctx);
       await executor.executeAppend(createAppendContentOp('test', 'World'), ctx);
 
-      expect(executor.getState().pendingContent).toBe('Hello World');
+      expect(executor.getState().pendingContent).toBe('Hello \n\nWorld');
     });
   });
 
@@ -219,8 +223,11 @@ describe('ContentExecutor', () => {
       await executor.executeAppend(createAppendContentOp('test', 'Hello'), ctx);
       await executor.executeFlush(createFlushOp('test', 'explicit'), ctx);
 
-      // The extra content should be preserved
-      expect(executor.getState().pendingContent).toBe(' extra');
+      // The extra content must be preserved (not lost) across the async flush.
+      // It carries a leading blank-line separator (added because pending was
+      // non-empty when it arrived); that leading separator is trimmed on the
+      // next flush's output, so it's cosmetic in the pending buffer.
+      expect(executor.getState().pendingContent).toBe('\n\n extra');
     });
 
     it('adds separator between tool outputs across multiple flushes', async () => {

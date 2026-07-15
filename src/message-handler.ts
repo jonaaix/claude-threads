@@ -290,8 +290,12 @@ export async function handleMessage(
         return;
       }
 
-      // Check if user is allowed in this session
-      if (!session.isUserAllowedInSession(threadRoot, username)) {
+      // Check if user is allowed in this session. A peer BOT reaching this point
+      // is an authorized bot-to-bot handoff (it only got here by @mentioning this
+      // bot and passing the baton gate), so it must NOT go through the human
+      // message-approval flow — otherwise the peer shows up as "Message from
+      // @OtherBot needs approval". Let the handoff through.
+      if (!session.isUserAllowedInSession(threadRoot, username) && !session.isBotUsername(username)) {
         // Request approval for their message
         if (content) await session.requestMessageApproval(threadRoot, username, content);
         return;

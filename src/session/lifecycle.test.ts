@@ -1159,6 +1159,21 @@ describe('resolveSessionHeaderMode', () => {
   });
 });
 
+describe('capHeaderForMultiBot', () => {
+  it('downgrades the full header table to minimal when a peer bot shares the channel', () => {
+    expect(lifecycle.capHeaderForMultiBot('full', true)).toBe('minimal');
+  });
+
+  it('leaves full unchanged when there is no peer (single-bot channel)', () => {
+    expect(lifecycle.capHeaderForMultiBot('full', false)).toBe('full');
+  });
+
+  it('never upgrades an already-reduced header (minimal/hidden stay as configured)', () => {
+    expect(lifecycle.capHeaderForMultiBot('minimal', true)).toBe('minimal');
+    expect(lifecycle.capHeaderForMultiBot('hidden', true)).toBe('hidden');
+  });
+});
+
 // ===========================================================================
 // resumeSessionHeaderMode — issue #383 / PR #384
 // Fallback cascade for resumed sessions.

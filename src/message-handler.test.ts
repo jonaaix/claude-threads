@@ -449,6 +449,26 @@ describe('handleMessage', () => {
       expect(session.interruptSession).not.toHaveBeenCalled();
     });
 
+    test('a peer bot handoff is NOT sent to human approval (accepted as authorized)', async () => {
+      // Bot→bot handoff: the peer isn't in this session's allowlist, but it
+      // reached here by @mentioning this bot — it must be accepted, not queued
+      // for approval ("Message from @OtherBot needs approval").
+      (session.isUserAllowedInSession as any).mockReturnValue(false);
+      (session.isBotUsername as any).mockImplementation((u: string) => u === 'peer-bot-2');
+      (session.resolveMentionedBot as any).mockReturnValue('test-platform'); // handoff addressed to me
+
+      const post: PlatformPost = {
+        id: 'post1', platformId: 'test', channelId: 'channel1', userId: 'bot-b',
+        message: '@claude-bot here is the info you asked for', rootId: 'thread1', createAt: Date.now(),
+      };
+      const user: PlatformUser = { id: 'bot-b', username: 'peer-bot-2', displayName: 'Peer Bot' };
+
+      await handleMessage(client, session, post, user, options);
+
+      expect(session.requestMessageApproval).not.toHaveBeenCalled();
+      expect(session.sendFollowUp).toHaveBeenCalled();
+    });
+
     test('requests approval for unauthorized user', async () => {
       (session.isUserAllowedInSession as any).mockReturnValue(false);
 

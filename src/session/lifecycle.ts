@@ -789,6 +789,17 @@ export function resolveSessionHeaderMode(
 }
 
 /**
+ * In a multi-bot channel, drop the big header TABLE (down to the compact
+ * one-line status bar) so several bots don't each post a full header and
+ * clutter the thread. Only downgrades the default `'full'`; an explicit
+ * `'minimal'`/`'hidden'` is left as-is (users who want the header fully gone
+ * set `sessionHeader: hidden`). No-op when no peer bot shares the channel.
+ */
+export function capHeaderForMultiBot(mode: OverheadVisibility, peersPresent: boolean): OverheadVisibility {
+  return mode === 'full' && peersPresent ? 'minimal' : mode;
+}
+
+/**
  * Create a new session for a thread.
  *
  * @param options - Session options including the initial prompt
@@ -863,10 +874,15 @@ export async function startSession(
   // Resolve per-platform header visibility once. See `resolveSessionHeaderMode`
   // for the rules — extracted so it's testable without spinning up a full
   // `startSession` (which would require mocking ClaudeCli, MessageManager, etc.).
-  const sessionHeaderMode = resolveSessionHeaderMode(
+  let sessionHeaderMode = resolveSessionHeaderMode(
     ctx.ops.getPlatformOverhead(platformId).sessionHeader,
     replyToPostId,
     platformId,
+  );
+  // Multi-bot channel: drop the big header table (keep the compact status line).
+  sessionHeaderMode = capHeaderForMultiBot(
+    sessionHeaderMode,
+    ctx.ops.getPeerBotNames(platformId).length > 0,
   );
 
   // Post initial session message (kept short to minimize popup notification size).
@@ -1383,6 +1399,16 @@ export async function resumeSession(
       })
     : new ClaudeCli(cliOptions);
 
+  // Same multi-bot header cap as startSession: drop the full table when peers
+  // share the channel (keep the compact status line).
+  const resumedHeaderMode = capHeaderForMultiBot(
+    resumeSessionHeaderMode(
+      state.sessionHeaderMode,
+      ctx.ops.getPlatformOverhead(platformId).sessionHeader,
+    ),
+    ctx.ops.getPeerBotNames(platformId).length > 0,
+  );
+
   // Rebuild Session object from persisted state
   const session: Session = {
     platformId,
@@ -1409,10 +1435,7 @@ export async function resumeSession(
     forceInteractivePermissions: state.forceInteractivePermissions ?? false,
     respondOnlyWhenMentioned: state.respondOnlyWhenMentioned ?? false,
     sessionStartPostId: state.sessionStartPostId ?? null,
-    sessionHeaderMode: resumeSessionHeaderMode(
-      state.sessionHeaderMode,
-      ctx.ops.getPlatformOverhead(platformId).sessionHeader,
-    ),
+    sessionHeaderMode: resumedHeaderMode,
     // NOTE: Task state (tasksPostId, lastTasksContent, etc.) is now managed by MessageManager.
     // These fields are NOT set here - MessageManager is hydrated with them below.
     timers: createSessionTimers(),
