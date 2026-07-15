@@ -1083,12 +1083,35 @@ describe('SessionManager', () => {
 
       test('does nothing when the author has no visible handoff post', async () => {
         const { m } = batonManager();
+        (m as unknown as { handoffLookupDelayMs: number }).handoffLookupDelayMs = 0; // don't sleep in tests
         const peer = (m as unknown as { platforms: Map<string, PlatformClient> }).platforms.get('bot-b')!;
         (peer as unknown as { getThreadHistory: unknown }).getThreadHistory = mock(async () => []);
 
         await m.dispatchBotHandoff('thread-1', 'bot-a', 'bot-b');
 
         expect(m.getBatonHolder('thread-1')).toBeUndefined(); // baton untouched
+      });
+
+      test('retries the history lookup when the handoff post is not persisted yet', async () => {
+        // Race: the author's post is not in the thread on the first fetch but
+        // appears on a later one. Without the retry the handoff is dropped.
+        const { m } = batonManager();
+        (m as unknown as { handoffLookupDelayMs: number }).handoffLookupDelayMs = 0;
+        const peer = (m as unknown as { platforms: Map<string, PlatformClient> }).platforms.get('bot-b')!;
+        let calls = 0;
+        (peer as unknown as { getThreadHistory: unknown }).getThreadHistory = mock(async () => {
+          calls++;
+          return calls >= 2
+            ? [{ id: 'h1', username: 'claude_a', message: "@claude_b it's your turn.", createAt: 1 }]
+            : [];
+        });
+        (peer as unknown as { isUserAllowed: unknown }).isUserAllowed = mock(() => false);
+        (peer as unknown as { createPost: unknown }).createPost = mock(async () => ({ id: 'x' }));
+
+        await m.dispatchBotHandoff('thread-1', 'bot-a', 'bot-b');
+
+        expect(calls).toBeGreaterThanOrEqual(2); // re-fetched after the empty first result
+        expect(m.getBatonHolder('thread-1')).toBe('bot-b');
       });
 
       test('transfers the baton to the peer the author @mentioned at turn end', async () => {

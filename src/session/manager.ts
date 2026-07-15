@@ -110,6 +110,13 @@ export class SessionManager extends EventEmitter {
   // Per-user GitHub noreply emails (registered via !github-email)
   private githubEmailsStore!: GitHubEmailsStore;
 
+  // Bot→bot handoff post-lookup retry. The author's handoff message may not be
+  // persisted on the platform yet at `result` time (createPost is async), so
+  // dispatchBotHandoff re-fetches the thread a few times before giving up.
+  // Tunable so tests can drop the delay to zero.
+  private handoffLookupAttempts = 4;
+  private handoffLookupDelayMs = 250;
+
   // Background tasks
   private sessionMonitor: SessionMonitor | null = null;       // Idle timeout + sticky refresh (1 min)
   private backgroundCleanup: CleanupScheduler | null = null;  // Logs + worktrees cleanup (1 hour)
@@ -418,15 +425,28 @@ export class SessionManager extends EventEmitter {
 
     // Find the author's actual handoff post (its id gives the peer a permalink,
     // identical to a received message). Newest matching post wins.
-    const history = await peerClient.getThreadHistory(threadId, { excludeBotMessages: false });
+    //
+    // Race guard: the handoff post may not be persisted on the platform yet at
+    // `result` time (createPost is async), so re-fetch a few times before giving
+    // up — otherwise the handoff is silently dropped and the peer never picks up.
     const authorBot = authorClient.getBotName().toLowerCase();
     let handoff: { id: string; username: string; message: string; createAt?: number } | undefined;
-    for (const m of history) {
-      if (m.username.toLowerCase() === authorBot && peerClient.isBotMentioned(m.message)) {
-        handoff = m;
+    for (let attempt = 0; attempt < this.handoffLookupAttempts && !handoff; attempt++) {
+      if (attempt > 0) await new Promise((r) => setTimeout(r, this.handoffLookupDelayMs));
+      const history = await peerClient.getThreadHistory(threadId, { excludeBotMessages: false });
+      for (const m of history) {
+        if (m.username.toLowerCase() === authorBot && peerClient.isBotMentioned(m.message)) {
+          handoff = m;
+        }
       }
     }
-    if (!handoff) return; // handoff post not visible (yet) — nothing to deliver
+    if (!handoff) {
+      log.warn(
+        `handoff dropped: no post from @${authorBot} mentioning ${toPlatformId} in thread ${threadId.substring(0, 8)}… after ${this.handoffLookupAttempts} attempts`,
+      );
+      return;
+    }
+    log.debug(`dispatching handoff ${fromPlatformId} → ${toPlatformId} (post ${handoff.id.substring(0, 8)}…)`);
 
     this.transferBaton(threadId, toPlatformId, { byBot: true });
 
