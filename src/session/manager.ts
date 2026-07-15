@@ -363,6 +363,26 @@ export class SessionManager extends EventEmitter {
     return winner;
   }
 
+  /**
+   * The peer a bot hands the baton to, extracted from its OWN output. A handoff
+   * happens ONLY via the explicit sentence `@<name> it's your turn.` — in any
+   * spelling (`it's` / `it’s` / `its` / `it is`, case-insensitive, any trailing
+   * punctuation), name and phrase on one line. A bare `@name` elsewhere does NOT
+   * hand off, so bots can reference each other in prose without dropping the
+   * baton. Returns undefined when the named target isn't a channel-peer (e.g. the
+   * user, or self) → no bot→bot handoff (control stays / goes to the user). On
+   * several turn-signals, the last one wins.
+   */
+  resolveHandoffTarget(text: string, platformId: string): string | undefined {
+    const re = /@([\w.-]+)[^\n@]*?\bit(?:['’]s|s|\s+is)\s+your\s+turn\b/gi;
+    let target: string | undefined;
+    for (const m of text.matchAll(re)) {
+      const resolved = this.resolveMentionedBot(`@${m[1]}`, platformId);
+      if (resolved && resolved !== platformId) target = resolved; // latest peer wins
+    }
+    return target;
+  }
+
   /** The platformId currently holding the baton in a thread, if known. */
   getBatonHolder(threadId: string): string | undefined {
     return this.threadCoordination.get(threadId)?.batonHolder;
@@ -711,6 +731,8 @@ export class SessionManager extends EventEmitter {
       getPeerBots: (pid) => this.getPeerBots(pid),
 
       resolveMentionedBot: (message, pid) => this.resolveMentionedBot(message, pid),
+
+      resolveHandoffTarget: (text, pid) => this.resolveHandoffTarget(text, pid),
 
       dispatchBotHandoff: (threadId, fromPid, toPid) => this.dispatchBotHandoff(threadId, fromPid, toPid),
     };

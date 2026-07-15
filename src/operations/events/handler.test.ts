@@ -173,6 +173,7 @@ function createSessionContext(): SessionContext {
       getPlatformModel: mock(() => undefined),
       getPlatformWorkingDir: mock(() => undefined),
       resolveMentionedBot: mock(() => undefined),
+      resolveHandoffTarget: mock(() => undefined),
       dispatchBotHandoff: mock(() => Promise.resolve()),
     },
   };
@@ -324,12 +325,12 @@ describe('handleEventPostProcessing', () => {
   });
 
   describe('bot→bot handoff trigger', () => {
-    test('tracks a peer @mention in the bot own output as a pending handoff', () => {
-      (ctx.ops.resolveMentionedBot as ReturnType<typeof mock>).mockReturnValue('peer-platform');
+    test('tracks a handoff turn-signal in the bot own output as a pending handoff', () => {
+      (ctx.ops.resolveHandoffTarget as ReturnType<typeof mock>).mockReturnValue('peer-platform');
 
       const event = {
         type: 'assistant' as const,
-        message: { content: [{ type: 'text', text: 'Good question — @peer_bot what does prod use?' }] },
+        message: { content: [{ type: 'text', text: "Prod uses Postgres. @peer_bot it's your turn." }] },
       };
 
       handleEventPostProcessing(session, event, ctx);
@@ -337,12 +338,26 @@ describe('handleEventPostProcessing', () => {
       expect(session.pendingHandoff).toEqual({ toPlatformId: 'peer-platform' });
     });
 
-    test('ignores a self @mention (peer resolves to this bot)', () => {
-      (ctx.ops.resolveMentionedBot as ReturnType<typeof mock>).mockReturnValue(session.platformId);
+    test('does NOT hand off on a bare mention without the turn-signal', () => {
+      // resolveHandoffTarget returns undefined unless the explicit sentence is present.
+      (ctx.ops.resolveHandoffTarget as ReturnType<typeof mock>).mockReturnValue(undefined);
 
       const event = {
         type: 'assistant' as const,
-        message: { content: [{ type: 'text', text: 'note to self @me' }] },
+        message: { content: [{ type: 'text', text: 'As @peer_bot noted earlier, prod uses Postgres.' }] },
+      };
+
+      handleEventPostProcessing(session, event, ctx);
+
+      expect(session.pendingHandoff).toBeUndefined();
+    });
+
+    test('ignores a turn-signal that resolves to this bot itself', () => {
+      (ctx.ops.resolveHandoffTarget as ReturnType<typeof mock>).mockReturnValue(session.platformId);
+
+      const event = {
+        type: 'assistant' as const,
+        message: { content: [{ type: 'text', text: "@me it's your turn." }] },
       };
 
       handleEventPostProcessing(session, event, ctx);

@@ -312,10 +312,12 @@ describe('buildPeerBotContext', () => {
     expect(section).toContain('`@infra-bot` — infra & deploys');
   });
 
-  it('warns that a plain-text @name hands off the task (avoid accidental baton loss)', () => {
+  it('teaches the explicit turn-signal handoff and that a bare mention does NOT hand off', () => {
     const section = buildPeerBotContext([{ name: 'peer-bot-2' }]);
-    expect(section).toContain('hands off the task');
-    expect(section.toLowerCase()).toContain('only do it when you actually mean to delegate');
+    // Handoff requires the exact sentence, not any mention.
+    expect(section).toContain("it's your turn.");
+    expect(section.toLowerCase()).toContain('only that sentence passes the turn');
+    expect(section.toLowerCase()).toContain('does not hand off');
   });
 
   it('allows proactive handoff without requiring explicit user permission', () => {

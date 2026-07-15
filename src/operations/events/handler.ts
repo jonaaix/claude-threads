@@ -231,10 +231,12 @@ export function handleEventPostProcessing(
         extractAndUpdatePullRequest(block.text, session, ctx);
         // Detect and execute Claude commands (e.g., !cd)
         detectAndExecuteClaudeCommands(block.text, session, ctx);
-        // Multi-bot: remember a peer @mention in the bot's OWN output. The
-        // handoff is NOT acted on mid-turn; it fires once at this bot's `result`
-        // (turn end) via dispatchBotHandoff. Latest peer-mention in the turn wins.
-        const peer = ctx.ops.resolveMentionedBot(block.text, session.platformId);
+        // Multi-bot: a bot hands off ONLY via the explicit sentence
+        // `@<peer> it's your turn.` in its OWN output — a bare @mention does not,
+        // so peers can be named in prose without dropping the baton. Not acted on
+        // mid-turn; it fires once at this bot's `result` (turn end) via
+        // dispatchBotHandoff. Latest turn-signal in the turn wins.
+        const peer = ctx.ops.resolveHandoffTarget(block.text, session.platformId);
         if (peer && peer !== session.platformId) {
           session.pendingHandoff = { toPlatformId: peer };
         }

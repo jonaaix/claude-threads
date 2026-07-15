@@ -328,10 +328,18 @@ export interface SessionOperations {
 
   /**
    * The platformId of the channel-peer bot @mentioned in `message` (or the
-   * caller itself if it is the one mentioned), else undefined. Used to detect a
-   * handoff in a bot's own output.
+   * caller itself if it is the one mentioned), else undefined. Used for the
+   * user-message baton gate (a user addresses a bot by plain @mention).
    */
   resolveMentionedBot(message: string, platformId: string): string | undefined;
+
+  /**
+   * The peer a bot hands off to, from its OWN output — ONLY via the explicit
+   * sentence `@<name> it's your turn.` (any spelling). Undefined when the target
+   * isn't a channel-peer (user/self) → no bot→bot handoff. Used to detect a
+   * deliberate handoff at the author's turn end.
+   */
+  resolveHandoffTarget(text: string, platformId: string): string | undefined;
 
   /**
    * Fire a bot→bot handoff at the end of the author's turn: hand the baton to the

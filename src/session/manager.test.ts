@@ -957,6 +957,48 @@ describe('SessionManager', () => {
       });
     });
 
+    describe('resolveHandoffTarget', () => {
+      test('resolves the peer from the explicit turn-signal sentence', () => {
+        const { m } = batonManager();
+        expect(m.resolveHandoffTarget("Prod uses Postgres. @claude_b it's your turn.", 'bot-a')).toBe('bot-b');
+      });
+
+      test('accepts all spellings: it is / its / curly apostrophe, any case & punctuation', () => {
+        const { m } = batonManager();
+        expect(m.resolveHandoffTarget('@claude_b it is your turn', 'bot-a')).toBe('bot-b');
+        expect(m.resolveHandoffTarget('@claude_b its your turn!', 'bot-a')).toBe('bot-b');
+        expect(m.resolveHandoffTarget('@claude_b it’s your turn.', 'bot-a')).toBe('bot-b');
+        expect(m.resolveHandoffTarget('@claude_b IT’S YOUR TURN', 'bot-a')).toBe('bot-b');
+        expect(m.resolveHandoffTarget('@claude_b, it is your turn.', 'bot-a')).toBe('bot-b');
+      });
+
+      test('a bare peer mention WITHOUT the sentence does not hand off', () => {
+        const { m } = batonManager();
+        expect(m.resolveHandoffTarget('As @claude_b noted, prod uses Postgres.', 'bot-a')).toBeUndefined();
+      });
+
+      test('a turn-signal to a non-peer (e.g. the user) does not hand off', () => {
+        const { m } = batonManager();
+        expect(m.resolveHandoffTarget("@some_user it's your turn.", 'bot-a')).toBeUndefined();
+      });
+
+      test('a turn-signal to a bot in another channel does not hand off (peer-scoped)', () => {
+        const { m } = batonManager();
+        expect(m.resolveHandoffTarget("@claude_c it's your turn.", 'bot-a')).toBeUndefined();
+      });
+
+      test('a turn-signal aimed at self does not hand off', () => {
+        const { m } = batonManager();
+        expect(m.resolveHandoffTarget("@claude_a it's your turn.", 'bot-a')).toBeUndefined();
+      });
+
+      test('on several turn-signals, the last peer wins', () => {
+        const { m } = batonManager();
+        // First hands to a self/non-peer, then to the real peer → peer wins.
+        expect(m.resolveHandoffTarget("@claude_a it's your turn. wait — @claude_b it's your turn.", 'bot-a')).toBe('bot-b');
+      });
+    });
+
     describe('transferBaton / getBatonHolder', () => {
       test('transfers the baton and reports the new holder', () => {
         const { m } = batonManager();

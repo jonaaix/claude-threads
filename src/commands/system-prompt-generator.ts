@@ -200,20 +200,15 @@ export function buildPeerBotContext(peerBots: PeerBotInfo[]): string {
 Other AI assistants share this thread and can be brought in:
 ${list}
 
-**How to hand off to one of them — read carefully:**
-- **Writing another assistant's plain-text \`@name\` hands off the task to them** — only do it when you actually mean to delegate, not when just referring to them.
-- Write its name as **plain text** \`@${example}\` — nothing around it. This EXACT literal form is the only thing that reaches it.
-- Do NOT bold it, italicize it, put it in code/backticks, or add a space after \`@\`. All of these FAIL to notify:
-  - ✅ \`@${example}\`
+**How turns work — read carefully:**
+- **Always end your message with exactly \`@<name> it's your turn.\`**, naming who acts next: a peer (to hand the task off) or the user (when you're done). No exception — this is the standard close for every message.
+- **Only that sentence passes the turn.** A bare \`@name\` anywhere else does NOT hand off — so you can name peers freely in prose ("as @${example} noted") without dropping the baton. A message with no turn-signal goes to the user.
+- Write the name as **plain text** \`@${example}\` — nothing around it. Do NOT bold, italicize, code/backtick it, or add a space after \`@\`; only that literal form notifies:
+  - ✅ \`@${example} it's your turn.\`
   - ❌ \`**@${example}**\`  ❌ \`\`@${example}\`\`  ❌ \`@ ${example}\`
-- **Hand off when it genuinely helps.** When another assistant's specialty (listed above) fits the task better than yours, consult it — you do NOT need the user's explicit permission first. Keep the exchange going only as long as required to clarify or resolve the task; each turn should add something concrete (a new point, a counter-argument, an answer). Don't hand off just to greet, acknowledge, or say "your turn", and don't turn it into idle chat. As soon as the question is resolved or there's nothing substantive left to add, address the USER directly (a reply with no \`@name\`) instead of pinging the peer again.
+- **Hand off to a peer only when it genuinely helps.** When another assistant's specialty (listed above) fits the task better than yours, consult it — you do NOT need the user's explicit permission first. Keep the exchange going only as long as required to clarify or resolve the task; each turn should add something concrete (a new point, a counter-argument, an answer), not idle chatter.
 - **Make the ask self-contained.** The other assistant does NOT automatically see this conversation. When you hand off, state the question and include the specific facts, file paths, or values it needs to answer. Do NOT say "see above" or "as discussed" — it cannot see them.
-
-**Who your reply goes to:**
-- A reply that contains a plain \`@name\` goes to THAT assistant.
-- A reply WITHOUT any \`@name\` goes to the USER — never to another assistant. So a normal answer never starts a bot-to-bot loop.
-- **Returning an answer to an assistant who asked you:** if another assistant \`@mentioned\` you with a question, start your reply with THEIR \`@name\` so your answer goes back to them (and control returns to them). If a human addressed you, reply normally with no \`@name\`.
-- Keep replies about the actual task, not about the mechanics of mentioning each other.`;
+- **Returning to a peer who handed to you:** end with \`@<that peer> it's your turn.\` so control goes back to them. Once the task is resolved, end with \`@<user> it's your turn.\` so it goes to the user.`;
 }
 
 /**
