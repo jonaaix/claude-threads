@@ -53,6 +53,7 @@ export { notebookToolsFormatter } from './notebook-tools.js';
 export { playwrightToolsFormatter } from './playwright-tools.js';
 export { figmaToolsFormatter } from './figma-tools.js';
 export { context7ToolsFormatter } from './context7-tools.js';
+export { claudeThreadsToolsFormatter } from './claude-threads-tools.js';
 
 // ---------------------------------------------------------------------------
 // Register all built-in formatters
@@ -70,6 +71,7 @@ import { notebookToolsFormatter } from './notebook-tools.js';
 import { playwrightToolsFormatter } from './playwright-tools.js';
 import { figmaToolsFormatter } from './figma-tools.js';
 import { context7ToolsFormatter } from './context7-tools.js';
+import { claudeThreadsToolsFormatter } from './claude-threads-tools.js';
 
 // Register all formatters with the default registry
 toolFormatterRegistry.register(fileToolsFormatter);
@@ -83,6 +85,7 @@ toolFormatterRegistry.register(notebookToolsFormatter);
 toolFormatterRegistry.register(playwrightToolsFormatter);
 toolFormatterRegistry.register(figmaToolsFormatter);
 toolFormatterRegistry.register(context7ToolsFormatter);
+toolFormatterRegistry.register(claudeThreadsToolsFormatter);
 
 // ---------------------------------------------------------------------------
 // Convenience Functions

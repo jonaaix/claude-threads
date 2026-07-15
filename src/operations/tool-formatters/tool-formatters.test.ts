@@ -16,6 +16,7 @@ import {
   playwrightToolsFormatter,
   figmaToolsFormatter,
   context7ToolsFormatter,
+  claudeThreadsToolsFormatter,
   shortenPath,
   parseMcpToolName,
   escapeRegExp,
@@ -112,6 +113,18 @@ describe('ToolFormatterRegistry', () => {
       );
 
       expect(result.display).toContain('🔌');
+    });
+
+    it('hides the claude-threads react_to_post tool use (reaction shows on the message)', () => {
+      registry.register(claudeThreadsToolsFormatter);
+      const result = registry.format(
+        'mcp__claude-threads-mcp__react_to_post',
+        { url: 'https://x/pl/p1', emoji: 'eyes' },
+        { formatter: mockFormatter }
+      );
+
+      expect(result.hidden).toBe(true);
+      expect(result.display).toBeNull();
     });
 
     it('formats non-MCP unknown tools with bullet', () => {
