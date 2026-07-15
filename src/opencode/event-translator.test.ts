@@ -140,10 +140,10 @@ describe('OpencodeEventTranslator', () => {
     expect(out).toEqual([]);
   });
 
-  it('maps a completed reasoning part to a thinking block', () => {
+  it('does NOT surface reasoning parts (parity with Claude, which never shows reasoning)', () => {
     t.translate(assistantMessage({ id: MSG_ID }));
     const out = t.translate(reasoningPart('r1', 'pondering', { end: 3 }));
-    expect(firstBlock(out[0])).toEqual({ type: 'thinking', thinking: 'pondering' });
+    expect(out).toEqual([]);
   });
 
   it('never echoes a user-message text part back as assistant text', () => {

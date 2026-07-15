@@ -789,14 +789,19 @@ export function resolveSessionHeaderMode(
 }
 
 /**
- * In a multi-bot channel, drop the big header TABLE (down to the compact
- * one-line status bar) so several bots don't each post a full header and
- * clutter the thread. Only downgrades the default `'full'`; an explicit
- * `'minimal'`/`'hidden'` is left as-is (users who want the header fully gone
- * set `sessionHeader: hidden`). No-op when no peer bot shares the channel.
+ * In a multi-bot channel, hide the session header entirely so several bots don't
+ * each post a header and clutter the thread — nobody needs the table there.
+ * Only overrides the default `'full'`; an explicit `'minimal'` is respected.
+ * No-op when no peer bot shares the channel. Applied to the CONFIGURED value
+ * before `resolveSessionHeaderMode`, so the "hidden needs a replyToPostId"
+ * safety downgrade still applies.
  */
-export function capHeaderForMultiBot(mode: OverheadVisibility, peersPresent: boolean): OverheadVisibility {
-  return mode === 'full' && peersPresent ? 'minimal' : mode;
+export function capHeaderForMultiBot(
+  mode: OverheadVisibility | undefined,
+  peersPresent: boolean,
+): OverheadVisibility | undefined {
+  if (!peersPresent) return mode;
+  return (mode ?? DEFAULT_OVERHEAD_VISIBILITY) === 'full' ? 'hidden' : mode;
 }
 
 /**
@@ -874,15 +879,16 @@ export async function startSession(
   // Resolve per-platform header visibility once. See `resolveSessionHeaderMode`
   // for the rules — extracted so it's testable without spinning up a full
   // `startSession` (which would require mocking ClaudeCli, MessageManager, etc.).
-  let sessionHeaderMode = resolveSessionHeaderMode(
-    ctx.ops.getPlatformOverhead(platformId).sessionHeader,
+  // Multi-bot channel: hide the header entirely (applied to the configured
+  // value so resolveSessionHeaderMode's hidden→minimal safety still guards a
+  // missing replyToPostId).
+  const sessionHeaderMode = resolveSessionHeaderMode(
+    capHeaderForMultiBot(
+      ctx.ops.getPlatformOverhead(platformId).sessionHeader,
+      ctx.ops.getPeerBotNames(platformId).length > 0,
+    ),
     replyToPostId,
     platformId,
-  );
-  // Multi-bot channel: drop the big header table (keep the compact status line).
-  sessionHeaderMode = capHeaderForMultiBot(
-    sessionHeaderMode,
-    ctx.ops.getPeerBotNames(platformId).length > 0,
   );
 
   // Post initial session message (kept short to minimize popup notification size).
@@ -1399,15 +1405,15 @@ export async function resumeSession(
       })
     : new ClaudeCli(cliOptions);
 
-  // Same multi-bot header cap as startSession: drop the full table when peers
-  // share the channel (keep the compact status line).
+  // Same multi-bot header cap as startSession: hide the header when peers share
+  // the channel (input is always concrete here, so coerce the |undefined away).
   const resumedHeaderMode = capHeaderForMultiBot(
     resumeSessionHeaderMode(
       state.sessionHeaderMode,
       ctx.ops.getPlatformOverhead(platformId).sessionHeader,
     ),
     ctx.ops.getPeerBotNames(platformId).length > 0,
-  );
+  ) ?? DEFAULT_OVERHEAD_VISIBILITY;
 
   // Rebuild Session object from persisted state
   const session: Session = {

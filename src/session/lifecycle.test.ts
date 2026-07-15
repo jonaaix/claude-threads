@@ -1160,15 +1160,20 @@ describe('resolveSessionHeaderMode', () => {
 });
 
 describe('capHeaderForMultiBot', () => {
-  it('downgrades the full header table to minimal when a peer bot shares the channel', () => {
-    expect(lifecycle.capHeaderForMultiBot('full', true)).toBe('minimal');
+  it('hides the header when a peer bot shares the channel (full → hidden)', () => {
+    expect(lifecycle.capHeaderForMultiBot('full', true)).toBe('hidden');
   });
 
-  it('leaves full unchanged when there is no peer (single-bot channel)', () => {
+  it('hides the header for the default (undefined) too when peers are present', () => {
+    expect(lifecycle.capHeaderForMultiBot(undefined, true)).toBe('hidden');
+  });
+
+  it('leaves the header unchanged when there is no peer (single-bot channel)', () => {
     expect(lifecycle.capHeaderForMultiBot('full', false)).toBe('full');
+    expect(lifecycle.capHeaderForMultiBot(undefined, false)).toBeUndefined();
   });
 
-  it('never upgrades an already-reduced header (minimal/hidden stay as configured)', () => {
+  it('respects an explicit minimal/hidden (does not upgrade it)', () => {
     expect(lifecycle.capHeaderForMultiBot('minimal', true)).toBe('minimal');
     expect(lifecycle.capHeaderForMultiBot('hidden', true)).toBe('hidden');
   });

@@ -944,6 +944,24 @@ describe('SessionManager', () => {
         // bot-c is @mentioned, but it is not a peer of bot-a (different channel).
         expect(m.resolveMentionedBot('@claude_c hey', 'bot-a')).toBeUndefined();
       });
+
+      test('treats bots as peers despite a cosmetic URL difference (trailing slash / case)', () => {
+        // Regression: exact url comparison broke peer detection when configs
+        // differed only by a trailing slash — silently disabling all multi-bot
+        // behavior (baton scoping, header hide, auto-seed context).
+        const m = new SessionManager('/test', 'default', false, 'off', testSessionsPath);
+        const mk = (id: string, botName: string, url: string) =>
+          new MattermostClient({
+            id, type: 'mattermost', displayName: id,
+            url, token: `t-${id}`, channelId: 'chan-1', botName,
+            allowedUsers: [], skipPermissions: false,
+          } as unknown as ConstructorParameters<typeof MattermostClient>[0]);
+        m.addPlatform('bot-a', mk('bot-a', 'claude_a', 'https://x') as unknown as PlatformClient, undefined, 'claude');
+        m.addPlatform('bot-b', mk('bot-b', 'claude_b', 'https://X/') as unknown as PlatformClient, undefined, 'claude');
+
+        expect(m.getPeerBotNames('bot-a')).toEqual(['claude_b']);
+        expect(m.resolveMentionedBot('@claude_b hi', 'bot-a')).toBe('bot-b');
+      });
     });
 
     describe('transferBaton / getBatonHolder', () => {

@@ -42,6 +42,22 @@ import { createLogger } from '../utils/logger.js';
 
 const log = createLogger('manager');
 
+/**
+ * Whether two platforms sit in the SAME chat channel (→ they're peer bots).
+ * Compares server URL + channelId, but NORMALIZES the URL (strips trailing
+ * slashes, lowercases) so a cosmetic config difference like
+ * `https://chat.example.com` vs `https://chat.example.com/` doesn't silently
+ * break peer detection — which would disable every multi-bot behavior (baton
+ * peer-scoping, header hiding, auto-seeded handoff context, peer descriptions).
+ */
+function sameChannel(
+  a: { url?: string; channelId?: string },
+  b: { url?: string; channelId?: string },
+): boolean {
+  const normUrl = (u: string | undefined) => (u ?? '').replace(/\/+$/, '').toLowerCase();
+  return normUrl(a.url) === normUrl(b.url) && a.channelId === b.channelId;
+}
+
 // Import unified context
 import {
   type SessionContext,
@@ -273,8 +289,7 @@ export class SessionManager extends EventEmitter {
     const peers: PeerBotInfo[] = [];
     for (const [pid, client] of this.platforms) {
       if (pid === platformId) continue;
-      const cfg = client.getMcpConfig();
-      if (cfg.url === selfCfg.url && cfg.channelId === selfCfg.channelId) {
+      if (sameChannel(client.getMcpConfig(), selfCfg)) {
         peers.push({ name: client.getBotName(), description: this.platformDescription.get(pid) });
       }
     }
@@ -331,10 +346,7 @@ export class SessionManager extends EventEmitter {
     let winner: string | undefined;
     let bestIndex = Infinity;
     for (const [pid, client] of this.platforms) {
-      if (pid !== platformId) {
-        const cfg = client.getMcpConfig();
-        if (cfg.url !== selfCfg.url || cfg.channelId !== selfCfg.channelId) continue;
-      }
+      if (pid !== platformId && !sameChannel(client.getMcpConfig(), selfCfg)) continue;
       const idx = client.mentionIndex(message);
       if (idx >= 0 && idx < bestIndex) {
         bestIndex = idx;

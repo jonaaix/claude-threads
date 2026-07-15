@@ -123,7 +123,11 @@ export class OpencodeEventTranslator {
       case 'text':
         return this.onTextLikePart(part.id, 'text', part.text, part.messageID, part.time?.end);
       case 'reasoning':
-        return this.onTextLikePart(part.id, 'reasoning', part.text, part.messageID, part.time?.end);
+        // Intentionally NOT surfaced. The Claude backend never shows its
+        // reasoning in the thread, so opencode shouldn't either — otherwise the
+        // model's raw chain-of-thought leaks as a "> 💭 …" quote (verbose and
+        // inconsistent across backends). Only the answer (text parts) is shown.
+        return [];
       case 'tool':
         return this.onToolPart(part);
       default:
