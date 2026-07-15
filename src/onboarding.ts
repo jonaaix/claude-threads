@@ -102,6 +102,25 @@ async function promptForModel(agentBackend: AgentBackendKind, initial: string): 
 }
 
 /**
+ * Optional per-bot working directory. Empty → the global `workingDir`. Set a
+ * separate directory when this bot needs its own repo / `CLAUDE.md` / persona
+ * (several bots in one process each get their own dir this way). Shared by the
+ * Mattermost and Slack wizards.
+ */
+async function promptForWorkingDir(initial: string): Promise<string> {
+  console.log('');
+  console.log(dim("  Working directory (optional): this bot's own dir — its own repo /"));
+  console.log(dim('  CLAUDE.md / persona. Empty → the global default workingDir.'));
+  const { workingDir } = await prompts({
+    type: 'text',
+    name: 'workingDir',
+    message: 'Working directory',
+    initial,
+  }, { onCancel });
+  return (workingDir || '').trim();
+}
+
+/**
  * One picker drives both `sessionHeader` and `stickyMessage` per platform —
  * the common case is "I want the bot to be more / less chatty in this
  * channel," not "make the per-thread header `minimal` but the channel
@@ -1121,6 +1140,7 @@ async function setupMattermostPlatform(
   let lastBotName = existingMattermost?.botName || 'claude-code';
   let lastDescription = existingMattermost?.description || '';
   let lastModel = typeof existingMattermost?.model === 'string' ? existingMattermost.model : '';
+  let lastWorkingDir = typeof existingMattermost?.workingDir === 'string' ? existingMattermost.workingDir : '';
   let lastAllowedUsers = existingMattermost?.allowedUsers?.join(',') || '';
   // New configs default to `auto` (the onboarding recommendation). Existing
   // configs keep whatever they had — never silently change an operator's
@@ -1289,6 +1309,9 @@ async function setupMattermostPlatform(
     // Optional model override for the chosen backend.
     lastModel = await promptForModel(agentBackend, lastModel);
 
+    // Optional per-bot working directory (own repo / CLAUDE.md / persona).
+    lastWorkingDir = await promptForWorkingDir(lastWorkingDir);
+
     // Now ask about permission mode (after user access is settled).
     // Applies to the Claude backend only; opencode ignores it.
     const { permissionMode } = await prompts({
@@ -1408,6 +1431,7 @@ async function setupMattermostPlatform(
       ...(agentBackend !== DEFAULT_AGENT_BACKEND ? { agent: agentBackend } : {}),
       // Only written when set — keeps configs minimal.
       ...(lastModel ? { model: lastModel } : {}),
+      ...(lastWorkingDir ? { workingDir: lastWorkingDir } : {}),
       // Verbosity persistence:
       //  - Split config (user had different values per surface, prompt was
       //    skipped): preserve both originals verbatim.
@@ -1598,6 +1622,7 @@ async function setupSlackPlatform(
   let lastBotName = existingSlack?.botName || 'claude';
   let lastDescription = existingSlack?.description || '';
   let lastModel = typeof existingSlack?.model === 'string' ? existingSlack.model : '';
+  let lastWorkingDir = typeof existingSlack?.workingDir === 'string' ? existingSlack.workingDir : '';
   let lastAllowedUsers = existingSlack?.allowedUsers?.join(',') || '';
   let lastPermissionMode: PermissionMode = existingSlack
     ? resolvePermissionMode({
@@ -1767,6 +1792,9 @@ async function setupSlackPlatform(
     // Optional model override for the chosen backend.
     lastModel = await promptForModel(agentBackend, lastModel);
 
+    // Optional per-bot working directory (own repo / CLAUDE.md / persona).
+    lastWorkingDir = await promptForWorkingDir(lastWorkingDir);
+
     // Now ask about permission mode (after user access is settled).
     // Applies to the Claude backend only; opencode ignores it.
     const { permissionMode } = await prompts({
@@ -1890,6 +1918,7 @@ async function setupSlackPlatform(
       ...(agentBackend !== DEFAULT_AGENT_BACKEND ? { agent: agentBackend } : {}),
       // Only written when set — keeps configs minimal.
       ...(lastModel ? { model: lastModel } : {}),
+      ...(lastWorkingDir ? { workingDir: lastWorkingDir } : {}),
       // Same persistence rules as Mattermost (split → preserve, default →
       // omit, non-default → write both with same value).
       ...(hasSplitVerbosity
