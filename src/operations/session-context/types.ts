@@ -325,6 +325,20 @@ export interface SessionOperations {
    * when. Empty when no other bot shares the channel.
    */
   getPeerBots(platformId: string): PeerBotInfo[];
+
+  /**
+   * The platformId of the channel-peer bot @mentioned in `message` (or the
+   * caller itself if it is the one mentioned), else undefined. Used to detect a
+   * handoff in a bot's own output.
+   */
+  resolveMentionedBot(message: string, platformId: string): string | undefined;
+
+  /**
+   * Fire a bot→bot handoff at the end of the author's turn: hand the baton to the
+   * peer and deliver the author's handoff message into the peer's session (same
+   * path as a received message). Honors the loop cap. No-op if nothing to hand.
+   */
+  dispatchBotHandoff(threadId: string, fromPlatformId: string, toPlatformId: string): Promise<void>;
 }
 
 // =============================================================================

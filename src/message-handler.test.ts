@@ -72,7 +72,6 @@ function createMockSessionManager() {
     transferBaton: mock(() => {}),
     seedBatonFromFloor: mock(() => undefined as string | undefined),
     peerBotsPresent: mock(() => false),
-    isBotProcessingInThread: mock(() => false),
     noteUserActivity: mock(() => {}),
     botHandoffLimitReached: mock(() => false),
     getMaxBotHandoffs: mock(() => 25),
@@ -460,13 +459,13 @@ describe('handleMessage', () => {
       expect(session.interruptSession).not.toHaveBeenCalled();
     });
 
-    test('a peer bot handoff is NOT sent to human approval (accepted as authorized)', async () => {
-      // Bot→bot handoff: the peer isn't in this session's allowlist, but it
-      // reached here by @mentioning this bot — it must be accepted, not queued
-      // for approval ("Message from @OtherBot needs approval").
+    test('a dispatched peer bot handoff is NOT sent to human approval (accepted as authorized)', async () => {
+      // Bot→bot handoff replayed by SessionManager.dispatchBotHandoff
+      // (dispatchedHandoff: true skips the baton gate). The peer isn't in this
+      // session's allowlist, but as a bot it must be accepted, not queued for
+      // approval ("Message from @OtherBot needs approval").
       (session.isUserAllowedInSession as any).mockReturnValue(false);
       (session.isBotUsername as any).mockImplementation((u: string) => u === 'peer-bot-2');
-      (session.resolveMentionedBot as any).mockReturnValue('test-platform'); // handoff addressed to me
 
       const post: PlatformPost = {
         id: 'post1', platformId: 'test', channelId: 'channel1', userId: 'bot-b',
@@ -474,7 +473,7 @@ describe('handleMessage', () => {
       };
       const user: PlatformUser = { id: 'bot-b', username: 'peer-bot-2', displayName: 'Peer Bot' };
 
-      await handleMessage(client, session, post, user, options);
+      await handleMessage(client, session, post, user, { ...options, dispatchedHandoff: true });
 
       expect(session.requestMessageApproval).not.toHaveBeenCalled();
       expect(session.sendFollowUp).toHaveBeenCalled();
@@ -2107,17 +2106,18 @@ describe('handleMessage', () => {
       expect(session.startSession).not.toHaveBeenCalled();
     });
 
-    test('a bot handing off to a peer (@peer, authored by another bot) still transfers the baton', async () => {
-      // bot1 writes "@peer-bot-2 ..." — authored by a bot but @mentions a peer.
-      // The mention branch runs BEFORE the bot-author loop guard, so the baton
-      // still transfers (this is the intended bot→bot handoff).
+    test('a bot-authored @peer message is discarded at receipt — no baton transfer', async () => {
+      // bot1 writes "@peer-bot-2 ..." — authored by a bot. At RECEIPT every
+      // bot-authored message is dropped, mention or not: the baton does NOT move
+      // here. The real handoff is fired by the AUTHOR at its turn end via
+      // SessionManager.dispatchBotHandoff, not from the peer's receipt of this post.
       (session.isBotUsername as any).mockImplementation((u: string) => u === 'peer-bot-1');
       (session.resolveMentionedBot as any).mockReturnValue('other-platform');
       (session.registry.find as any).mockReturnValue(ownSession);
 
       await handleMessage(client, session, mkPost('@peer-bot-2 what does prod use?', 'peer-bot-1', 'bot-a'), { id: 'bot-a', username: 'peer-bot-1' }, options);
 
-      expect(session.transferBaton).toHaveBeenCalledWith('thread1', 'other-platform', { byBot: true });
+      expect(session.transferBaton).not.toHaveBeenCalled();
       expect(session.sendFollowUp).not.toHaveBeenCalled();
     });
 
@@ -2182,6 +2182,9 @@ describe('handleMessage', () => {
 
     test('ignores a message this bot authored itself (self-echo guard)', async () => {
       // A bot's own post must never re-enter its own session (derails the turn).
+      // isBotUsername is true for the bot's own name (it's a registered platform),
+      // so the receipt gate drops it like any other bot-authored message.
+      (session.isBotUsername as any).mockImplementation((u: string) => u === 'claude-bot');
       (session.registry.find as any).mockReturnValue(ownSession);
       (session.isUserAllowedInSession as any).mockReturnValue(true);
 
@@ -2190,63 +2193,6 @@ describe('handleMessage', () => {
 
       expect(session.sendFollowUp).not.toHaveBeenCalled();
       expect(session.transferBaton).not.toHaveBeenCalled();
-    });
-
-    test('defers a handoff @mention emitted by a peer bot that is still mid-turn (turn-gate)', async () => {
-      // peer bot "claude_peer" is @mentioning THIS bot but is still processing →
-      // not a settled handoff yet. Do not transfer the baton, do not pick up.
-      (session.resolveMentionedBot as any).mockReturnValue('test-platform'); // mentions me
-      (session.isBotUsername as any).mockImplementation((u: string) => u === 'claude_peer');
-      (session.isBotProcessingInThread as any).mockReturnValue(true);
-      (session.registry.find as any).mockReturnValue(ownSession);
-      (session.isUserAllowedInSession as any).mockReturnValue(true);
-
-      await handleMessage(client, session, mkPost('@claude-bot here, let me check first', 'claude_peer', 'peer'), { id: 'peer', username: 'claude_peer' }, options);
-
-      expect(session.transferBaton).not.toHaveBeenCalled();
-      expect(session.sendFollowUp).not.toHaveBeenCalled();
-    });
-
-    test('accepts the handoff once the peer bot has finished its turn', async () => {
-      // Same as above but the author is no longer processing → real handoff.
-      (session.resolveMentionedBot as any).mockReturnValue('test-platform');
-      (session.isBotUsername as any).mockImplementation((u: string) => u === 'claude_peer');
-      (session.isBotProcessingInThread as any).mockReturnValue(false);
-      (session.registry.find as any).mockReturnValue(ownSession);
-      (session.isUserAllowedInSession as any).mockReturnValue(true);
-
-      await handleMessage(client, session, mkPost('@claude-bot here is my assessment: …', 'claude_peer', 'peer'), { id: 'peer', username: 'claude_peer' }, options);
-
-      expect(session.transferBaton).toHaveBeenCalledWith('thread1', 'test-platform', { byBot: true });
-      expect(session.sendFollowUp).toHaveBeenCalled();
-    });
-
-    test('pauses the exchange and posts a notice when the bot-to-bot cap is reached', async () => {
-      (session.resolveMentionedBot as any).mockReturnValue('test-platform'); // addressed to me
-      (session.isBotUsername as any).mockImplementation((u: string) => u === 'claude_peer');
-      (session.isBotProcessingInThread as any).mockReturnValue(false);
-      (session.botHandoffLimitReached as any).mockReturnValue(true);
-      (session.registry.find as any).mockReturnValue(ownSession);
-      (session.isUserAllowedInSession as any).mockReturnValue(true);
-
-      await handleMessage(client, session, mkPost('@claude-bot one more round', 'claude_peer', 'peer'), { id: 'peer', username: 'claude_peer' }, options);
-
-      expect(session.transferBaton).not.toHaveBeenCalled();
-      expect(session.sendFollowUp).not.toHaveBeenCalled();
-      const posted = [...client.posts.values()].join(' ').toLowerCase();
-      expect(posted).toContain('paused');
-    });
-
-    test('the cap does NOT apply to a human handoff (only bot→bot counts)', async () => {
-      (session.resolveMentionedBot as any).mockReturnValue('test-platform');
-      (session.botHandoffLimitReached as any).mockReturnValue(true); // even at the cap…
-      (session.registry.find as any).mockReturnValue(ownSession);
-      (session.isUserAllowedInSession as any).mockReturnValue(true);
-
-      // …a human @mention still goes through (byBot=false skips the cap check).
-      await handleMessage(client, session, mkPost('@claude-bot keep going'), { id: 'u1', username: 'allowed-user' }, options);
-
-      expect(session.transferBaton).toHaveBeenCalledWith('thread1', 'test-platform', { byBot: false });
     });
 
     test('a human message resets the bot-to-bot loop budget', async () => {

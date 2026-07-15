@@ -30,6 +30,7 @@ import * as commands from '../operations/commands/index.js';
 import * as lifecycle from './lifecycle.js';
 import { CHAT_PLATFORM_PROMPT } from './lifecycle.js';
 import type { PeerBotInfo } from '../commands/system-prompt-generator.js';
+import { handleMessage } from '../message-handler.js';
 import * as worktreeModule from '../operations/worktree/index.js';
 import * as contextPrompt from '../operations/context-prompt/index.js';
 import * as stickyMessage from '../operations/sticky-message/index.js';
@@ -368,19 +369,67 @@ export class SessionManager extends EventEmitter {
   }
 
   /**
-   * Whether the bot named `botUsername` has an active session in `threadId` that
-   * is still mid-turn (processing). Used to defer bot→bot handoffs: an @mention a
-   * bot emits WHILE it is still answering is not a settled handoff — the peer must
-   * wait until the author's turn completes, so the author isn't cut off mid-answer.
+   * Fire a bot→bot handoff at the END of the author's turn (called from the
+   * author's `result` event). The author signalled a peer @mention in its own
+   * output during the turn; now that it's finished, hand the baton over and
+   * deliver the author's handoff message into the peer's session via the normal
+   * receipt path (so delta-context, permalink, and new/paused/active-session
+   * handling are all identical to a received message). Honors the loop cap.
+   *
+   * Delivering here — in-process at turn end — rather than reacting when the peer
+   * receives the message over the websocket avoids the timing race (the author's
+   * local `result` fires before the peer's network receipt) and makes the
+   * @mention's position within the turn irrelevant.
    */
-  isBotProcessingInThread(threadId: string, botUsername: string): boolean {
-    const u = botUsername.toLowerCase();
-    for (const s of this.registry.findAllByThreadId(threadId)) {
-      if (s.platform.getBotName().toLowerCase() === u) {
-        return s.isProcessing === true;
+  async dispatchBotHandoff(threadId: string, fromPlatformId: string, toPlatformId: string): Promise<void> {
+    const authorClient = this.platforms.get(fromPlatformId);
+    const peerClient = this.platforms.get(toPlatformId);
+    if (!authorClient || !peerClient) return;
+
+    // Loop budget: too many consecutive bot→bot rounds → pause and hand back to
+    // the user. Reset happens on the next human message (noteUserActivity).
+    if (this.botHandoffLimitReached(threadId)) {
+      await authorClient.createPost(
+        `↩️ Paused the bot-to-bot exchange after ${this.maxBotHandoffs} rounds — reply to keep it going.`,
+        threadId,
+      ).catch(() => {});
+      return;
+    }
+
+    // Find the author's actual handoff post (its id gives the peer a permalink,
+    // identical to a received message). Newest matching post wins.
+    const history = await peerClient.getThreadHistory(threadId, { excludeBotMessages: false });
+    const authorBot = authorClient.getBotName().toLowerCase();
+    let handoff: { id: string; username: string; message: string; createAt?: number } | undefined;
+    for (const m of history) {
+      if (m.username.toLowerCase() === authorBot && peerClient.isBotMentioned(m.message)) {
+        handoff = m;
       }
     }
-    return false;
+    if (!handoff) return; // handoff post not visible (yet) — nothing to deliver
+
+    this.transferBaton(threadId, toPlatformId, { byBot: true });
+
+    // Replay the author's handoff message into the peer's session through the
+    // normal handler (dispatchedHandoff bypasses the receipt gate).
+    const post: PlatformPost = {
+      id: handoff.id,
+      platformId: toPlatformId,
+      channelId: peerClient.getMcpConfig().channelId,
+      userId: handoff.username,
+      message: handoff.message,
+      rootId: threadId,
+      createAt: handoff.createAt,
+    };
+    const authorUser: PlatformUser = {
+      id: handoff.username,
+      username: authorClient.getBotName(),
+      displayName: authorClient.displayName,
+    };
+    await handleMessage(peerClient, this, post, authorUser, {
+      platformId: toPlatformId,
+      dispatchedHandoff: true,
+    });
   }
 
   /**
@@ -660,6 +709,10 @@ export class SessionManager extends EventEmitter {
       getPeerBotNames: (pid) => this.getPeerBotNames(pid),
 
       getPeerBots: (pid) => this.getPeerBots(pid),
+
+      resolveMentionedBot: (message, pid) => this.resolveMentionedBot(message, pid),
+
+      dispatchBotHandoff: (threadId, fromPid, toPid) => this.dispatchBotHandoff(threadId, fromPid, toPid),
     };
 
     return createSessionContext(config, state, ops);

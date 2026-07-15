@@ -231,6 +231,13 @@ export function handleEventPostProcessing(
         extractAndUpdatePullRequest(block.text, session, ctx);
         // Detect and execute Claude commands (e.g., !cd)
         detectAndExecuteClaudeCommands(block.text, session, ctx);
+        // Multi-bot: remember a peer @mention in the bot's OWN output. The
+        // handoff is NOT acted on mid-turn; it fires once at this bot's `result`
+        // (turn end) via dispatchBotHandoff. Latest peer-mention in the turn wins.
+        const peer = ctx.ops.resolveMentionedBot(block.text, session.platformId);
+        if (peer && peer !== session.platformId) {
+          session.pendingHandoff = { toPlatformId: peer };
+        }
       }
     }
   }
@@ -246,6 +253,18 @@ export function handleEventPostProcessing(
     ctx.ops.emitSessionUpdate(session.sessionId, { status: getSessionStatus(session) });
     updateUsageStats(session, event, ctx);
     ctx.ops.persistSession(session);
+
+    // Turn is over → NOW fire any bot→bot handoff this bot signalled in its own
+    // output. Doing it here (not when a peer receives the message) means the
+    // handoff is triggered at turn end regardless of where the @mention sat in
+    // the answer. Fire-and-forget: this post-processing hook is synchronous.
+    const handoff = session.pendingHandoff;
+    session.pendingHandoff = undefined;
+    if (handoff) {
+      void ctx.ops
+        .dispatchBotHandoff(session.threadId, session.platformId, handoff.toPlatformId)
+        .catch((err) => sessionLog(session).warn(`handoff dispatch failed: ${err instanceof Error ? err.message : String(err)}`));
+    }
   }
 
   // Track tool errors for bug reporting context

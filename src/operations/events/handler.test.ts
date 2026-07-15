@@ -172,6 +172,8 @@ function createSessionContext(): SessionContext {
       getPeerBots: mock(() => []),
       getPlatformModel: mock(() => undefined),
       getPlatformWorkingDir: mock(() => undefined),
+      resolveMentionedBot: mock(() => undefined),
+      dispatchBotHandoff: mock(() => Promise.resolve()),
     },
   };
 }
@@ -319,6 +321,51 @@ describe('handleEventPostProcessing', () => {
     handleEventPostProcessing(session, event, ctx);
 
     expect(session.pullRequestUrl).toBe('https://github.com/user/repo/pull/100');
+  });
+
+  describe('bot→bot handoff trigger', () => {
+    test('tracks a peer @mention in the bot own output as a pending handoff', () => {
+      (ctx.ops.resolveMentionedBot as ReturnType<typeof mock>).mockReturnValue('peer-platform');
+
+      const event = {
+        type: 'assistant' as const,
+        message: { content: [{ type: 'text', text: 'Good question — @peer_bot what does prod use?' }] },
+      };
+
+      handleEventPostProcessing(session, event, ctx);
+
+      expect(session.pendingHandoff).toEqual({ toPlatformId: 'peer-platform' });
+    });
+
+    test('ignores a self @mention (peer resolves to this bot)', () => {
+      (ctx.ops.resolveMentionedBot as ReturnType<typeof mock>).mockReturnValue(session.platformId);
+
+      const event = {
+        type: 'assistant' as const,
+        message: { content: [{ type: 'text', text: 'note to self @me' }] },
+      };
+
+      handleEventPostProcessing(session, event, ctx);
+
+      expect(session.pendingHandoff).toBeUndefined();
+    });
+
+    test('fires the tracked handoff at result and clears it', () => {
+      session.pendingHandoff = { toPlatformId: 'peer-platform' };
+
+      handleEventPostProcessing(session, { type: 'result' }, ctx);
+
+      expect(ctx.ops.dispatchBotHandoff).toHaveBeenCalledWith(session.threadId, session.platformId, 'peer-platform');
+      expect(session.pendingHandoff).toBeUndefined();
+    });
+
+    test('does not dispatch a handoff when none was tracked', () => {
+      session.pendingHandoff = undefined;
+
+      handleEventPostProcessing(session, { type: 'result' }, ctx);
+
+      expect(ctx.ops.dispatchBotHandoff).not.toHaveBeenCalled();
+    });
   });
 
   // NOTE: Subagent toggle reaction tests have been moved to subagent.test.ts

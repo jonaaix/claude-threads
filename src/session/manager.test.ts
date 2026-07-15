@@ -8,6 +8,7 @@ import { SessionStore } from '../persistence/session-store.js';
 import { MattermostClient } from '../platform/mattermost/client.js';
 import type { PlatformClient, PlatformPost } from '../platform/index.js';
 import { createMockFormatter } from '../test-utils/mock-formatter.js';
+import { DEFAULT_MAX_BOT_HANDOFFS } from '../config/types.js';
 import { setLogHandler } from '../utils/logger.js';
 import * as path from 'path';
 import * as os from 'os';
@@ -621,23 +622,6 @@ describe('SessionManager', () => {
     });
   });
 
-  describe('isBotProcessingInThread', () => {
-    const botPlatform = (name: string) => ({ getBotName: () => name }) as unknown as PlatformClient;
-
-    test('true when the named bot has a processing session in the thread', () => {
-      injectSession(manager, botPlatform('bot-x'), 'T', { isProcessing: true });
-      expect(manager.isBotProcessingInThread('T', 'bot-x')).toBe(true);
-      expect(manager.isBotProcessingInThread('T', 'BOT-X')).toBe(true); // case-insensitive
-    });
-
-    test('false when the bot session is idle, the bot is absent, or the thread is unknown', () => {
-      injectSession(manager, botPlatform('bot-x'), 'T', { isProcessing: false });
-      expect(manager.isBotProcessingInThread('T', 'bot-x')).toBe(false);
-      expect(manager.isBotProcessingInThread('T', 'someone-else')).toBe(false);
-      expect(manager.isBotProcessingInThread('unknown-thread', 'bot-x')).toBe(false);
-    });
-  });
-
   describe('isUserAllowedInSession', () => {
     test('returns true for session owner', () => {
       injectSession(manager, platform as unknown as PlatformClient, 'thread-X', {
@@ -897,9 +881,9 @@ describe('SessionManager', () => {
     // Two peer bots sharing one channel (same url + channelId) plus one bot in a
     // DIFFERENT channel, to exercise peer-scoping. Each gets its own sessions
     // file so persistence assertions don't cross-contaminate.
-    function batonManager() {
+    function batonManager(cap: number = DEFAULT_MAX_BOT_HANDOFFS) {
       const sessionsPath = path.join(os.tmpdir(), `baton-${Date.now()}-${Math.floor(performance.now())}.json`);
-      const m = new SessionManager('/test', 'default', false, 'off', sessionsPath);
+      const m = new SessionManager('/test', 'default', false, 'off', sessionsPath, true, 30, undefined, undefined, false, cap);
       const mk = (id: string, botName: string, channelId: string) =>
         new MattermostClient({
           id, type: 'mattermost', displayName: id,
@@ -1026,6 +1010,60 @@ describe('SessionManager', () => {
       test('false for a bot alone in its channel', () => {
         const { m } = batonManager();
         expect(m.peerBotsPresent('bot-c')).toBe(false);
+      });
+    });
+
+    describe('dispatchBotHandoff', () => {
+      test('no-op when the target platform is unknown', async () => {
+        const { m } = batonManager();
+        await m.dispatchBotHandoff('thread-1', 'bot-a', 'does-not-exist');
+        expect(m.getBatonHolder('thread-1')).toBeUndefined();
+      });
+
+      test('pauses and does NOT transfer when the bot-to-bot cap is reached', async () => {
+        const { m } = batonManager(2);
+        const author = (m as unknown as { platforms: Map<string, PlatformClient> }).platforms.get('bot-a')!;
+        const posted: string[] = [];
+        (author as unknown as { createPost: unknown }).createPost = mock(async (msg: string) => { posted.push(msg); return { id: 'x' }; });
+        (author as unknown as { getThreadHistory: unknown }).getThreadHistory = mock(async () => { throw new Error('history must not be fetched at the cap'); });
+
+        // Drive the hop counter to the cap (2).
+        m.transferBaton('thread-1', 'bot-b', { byBot: true });
+        m.transferBaton('thread-1', 'bot-a', { byBot: true });
+        expect(m.botHandoffLimitReached('thread-1')).toBe(true);
+        const holderBefore = m.getBatonHolder('thread-1');
+
+        await m.dispatchBotHandoff('thread-1', 'bot-a', 'bot-b');
+
+        expect(posted.join(' ').toLowerCase()).toContain('paused');
+        expect(m.getBatonHolder('thread-1')).toBe(holderBefore); // unchanged
+      });
+
+      test('does nothing when the author has no visible handoff post', async () => {
+        const { m } = batonManager();
+        const peer = (m as unknown as { platforms: Map<string, PlatformClient> }).platforms.get('bot-b')!;
+        (peer as unknown as { getThreadHistory: unknown }).getThreadHistory = mock(async () => []);
+
+        await m.dispatchBotHandoff('thread-1', 'bot-a', 'bot-b');
+
+        expect(m.getBatonHolder('thread-1')).toBeUndefined(); // baton untouched
+      });
+
+      test('transfers the baton to the peer the author @mentioned at turn end', async () => {
+        const { m } = batonManager();
+        const peer = (m as unknown as { platforms: Map<string, PlatformClient> }).platforms.get('bot-b')!;
+        // Author (claude_a) @mentioned the peer (claude_b) in its own output.
+        (peer as unknown as { getThreadHistory: unknown }).getThreadHistory = mock(async () => [
+          { id: 'h1', username: 'claude_a', message: '@claude_b what does prod use?', createAt: 1 },
+        ]);
+        // Stop the replayed handleMessage before it spawns Claude: an unauthorized
+        // author just gets a "not authorized" notice (swallowed by createPost).
+        (peer as unknown as { isUserAllowed: unknown }).isUserAllowed = mock(() => false);
+        (peer as unknown as { createPost: unknown }).createPost = mock(async () => ({ id: 'x' }));
+
+        await m.dispatchBotHandoff('thread-1', 'bot-a', 'bot-b');
+
+        expect(m.getBatonHolder('thread-1')).toBe('bot-b');
       });
     });
 

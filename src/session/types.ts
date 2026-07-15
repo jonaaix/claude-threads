@@ -325,6 +325,12 @@ export interface Session {
   // survives a restart. Undefined → seeded from the current thread on next use.
   lastSeenPostId?: string;
 
+  // Pending bot→bot handoff detected in THIS bot's own output during the current
+  // turn (the platformId of the peer it @mentioned). The handoff is NOT acted on
+  // mid-turn; it fires once, at this bot's `result` event (turn end), via
+  // SessionManager.dispatchBotHandoff. Reset each turn (consumed on result).
+  pendingHandoff?: { toPlatformId: string };
+
   // Interactive state (collaboration - not Claude events)
   planApproved: boolean;
 
