@@ -536,6 +536,17 @@ describe('context-prompt', () => {
       expect(delta[delta.length - 1].id).toBe(String(DELTA_MSG_CAP + 10));
       expect(delta[0].id).toBe(String(11));
     });
+
+    it('drops non-content posts (working/system) but keeps human + bot content', () => {
+      const h: ThreadMessage[] = [
+        { id: '1', userId: 'u', username: 'alice', message: 'hi', createAt: 0 },                    // human, no kind
+        { id: '2', userId: 'u', username: 'bot1', message: 'the answer', createAt: 0, kind: 'content' },
+        { id: '3', userId: 'u', username: 'bot1', message: '🛠️ Working', createAt: 0, kind: 'working' },
+        { id: '4', userId: 'u', username: 'bot1', message: '⚠️ error', createAt: 0, kind: 'system' },
+      ];
+      const delta = computeMissedDelta(h, undefined, 'bot2', 'none');
+      expect(delta.map(m => m.id)).toEqual(['1', '2']);
+    });
   });
 
   describe('formatMissedMessagesForClaude', () => {
@@ -560,6 +571,16 @@ describe('context-prompt', () => {
       const out = formatMissedMessagesForClaude([msg('alice', long)]);
       expect(out).toContain('x'.repeat(DELTA_TRUNC) + '…');
       expect(out).not.toContain('x'.repeat(DELTA_TRUNC + 1));
+    });
+
+    it('appends attachment URLs so the bot can fetch them (e.g. a peer screenshot)', () => {
+      const withFile: ThreadMessage = {
+        id: 'p', userId: 'u', username: 'tarek', message: 'see this', createAt: 0,
+        files: [{ id: 'f1', name: 'shot.png', url: 'https://mm.example/api/v4/files/f1' }],
+      };
+      const out = formatMissedMessagesForClaude([withFile]);
+      expect(out).toContain('@tarek: see this');
+      expect(out).toContain('attachments: shot.png → https://mm.example/api/v4/files/f1');
     });
   });
 });

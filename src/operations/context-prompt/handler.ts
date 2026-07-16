@@ -367,7 +367,14 @@ export function computeMissedDelta(
   const own = ownBotUsername.toLowerCase();
   const delta = history
     .slice(start)
-    .filter(m => m.id !== triggerPostId && m.username.toLowerCase() !== own);
+    .filter(m =>
+      m.id !== triggerPostId &&
+      m.username.toLowerCase() !== own &&
+      // Only real messages: human posts (no kind) and bots' actual answers
+      // ('content'). Drop working/tool/status/system posts so a peer gets the
+      // clean conversation, not the noise (kind comes from platform metadata).
+      (m.kind === undefined || m.kind === 'content')
+    );
   return delta.length > cap ? delta.slice(delta.length - cap) : delta;
 }
 
@@ -382,7 +389,8 @@ export function formatMissedMessagesForClaude(messages: ThreadMessage[]): string
   const lines: string[] = [
     '[Messages you missed while another assistant was active. Each line is '
       + 'attributed to its author; other assistants appear as @name like any '
-      + 'participant. Use these only as context for the request that follows:]',
+      + 'participant. Any attachments are listed as URLs you can fetch. Use these '
+      + 'only as context for the request that follows:]',
     '',
   ];
   let budget = DELTA_TOTAL_CHARS;
@@ -393,8 +401,14 @@ export function formatMissedMessagesForClaude(messages: ThreadMessage[]): string
     if (content.length > budget) {
       content = content.substring(0, Math.max(0, budget)) + '…';
     }
-    budget -= content.length;
-    lines.push(`@${msg.username}: ${content}`);
+    let line = `@${msg.username}: ${content}`;
+    // Attach file URLs so the bot can fetch them (e.g. a screenshot a peer
+    // posted) — the delta itself only carries text.
+    if (msg.files && msg.files.length > 0) {
+      line += ` [attachments: ${msg.files.map(f => `${f.name} → ${f.url}`).join(', ')}]`;
+    }
+    budget -= line.length;
+    lines.push(line);
     if (budget <= 0) {
       lines.push('… (older missed messages omitted)');
       break;
