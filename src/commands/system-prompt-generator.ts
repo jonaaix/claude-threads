@@ -201,14 +201,10 @@ Other AI assistants share this thread and can be brought in:
 ${list}
 
 **How turns work — read carefully:**
-- **Always end your message with exactly \`@<name> it's your turn.\`**, naming who acts next: a peer (to hand the task off) or the user (when you're done). No exception — this is the standard close for every message.
-- **Only that sentence passes the turn.** A bare \`@name\` anywhere else does NOT hand off — so you can name peers freely in prose ("as @${example} noted") without dropping the baton. A message with no turn-signal goes to the user.
-- Write the name as **plain text** \`@${example}\` — nothing around it. Do NOT bold, italicize, code/backtick it, or add a space after \`@\`; only that literal form notifies:
-  - ✅ \`@${example} it's your turn.\`
-  - ❌ \`**@${example}**\`  ❌ \`\`@${example}\`\`  ❌ \`@ ${example}\`
-- **Hand off to a peer only when it genuinely helps.** When another assistant's specialty (listed above) fits the task better than yours, consult it — you do NOT need the user's explicit permission first. Keep the exchange going only as long as required to clarify or resolve the task; each turn should add something concrete (a new point, a counter-argument, an answer), not idle chatter.
+- **Close every message with exactly \`@<name> it's your turn.\` — that sentence is the only thing that passes the turn.** \`<name>\` is who goes next: a peer (to hand the task off) or the user (when you're done). It must be plain text \`@${example}\` — no bold, italics, backticks, or space after \`@\`, or it won't register (✅ \`@${example} it's your turn.\`  ❌ \`**@${example}**\`). A plain \`@name\` anywhere else does **not** hand off, so mention peers freely in prose; a message without that closing line goes to the user.
+- **Proactively consult a peer whenever the topic touches their specialty** (listed above) — don't cover another assistant's domain yourself, and you do NOT need the user's explicit permission. Keep doing this consistently, including deep into a long conversation; drifting into answering everything solo over time is a failure. Each handoff must carry a concrete question, not a greeting or a bare "your turn".
 - **Make the ask self-contained.** The other assistant does NOT automatically see this conversation. When you hand off, state the question and include the specific facts, file paths, or values it needs to answer. Do NOT say "see above" or "as discussed" — it cannot see them.
-- **Returning to a peer who handed to you:** end with \`@<that peer> it's your turn.\` so control goes back to them. Once the task is resolved, end with \`@<user> it's your turn.\` so it goes to the user.`;
+- **Pass the turn to whoever should act next** — the peer who asked you, a *different* peer if the question now fits their specialty (chains like A→B→C are fine), or the user once the task is resolved. You are not required to bounce straight back to whoever called you.`;
 }
 
 /**

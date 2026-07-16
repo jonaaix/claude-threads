@@ -316,8 +316,8 @@ describe('buildPeerBotContext', () => {
     const section = buildPeerBotContext([{ name: 'peer-bot-2' }]);
     // Handoff requires the exact sentence, not any mention.
     expect(section).toContain("it's your turn.");
-    expect(section.toLowerCase()).toContain('only that sentence passes the turn');
-    expect(section.toLowerCase()).toContain('does not hand off');
+    expect(section.toLowerCase()).toContain('the only thing that passes the turn');
+    expect(section.toLowerCase()).toContain('mention peers freely in prose');
   });
 
   it('allows proactive handoff without requiring explicit user permission', () => {
@@ -325,10 +325,17 @@ describe('buildPeerBotContext', () => {
     expect(section.toLowerCase()).toContain('explicit permission');
   });
 
-  it('does not push bots toward maximizing exchange (task-driven, not "many times")', () => {
+  it('encourages proactive, sustained consultation of peers on their specialty', () => {
     const section = buildPeerBotContext([{ name: 'peer-bot-2', description: 'x' }]);
-    expect(section.toLowerCase()).not.toContain('many times');
-    expect(section.toLowerCase()).toContain('as long as required to clarify or resolve the task');
+    // Regression: the old wording dampened handoffs ("only when it genuinely
+    // helps"), so bots consulted too rarely and less over time. Encourage it.
+    expect(section.toLowerCase()).toContain('proactively consult');
+    expect(section.toLowerCase()).toContain('including deep into a long conversation');
+  });
+
+  it('allows the turn to pass to a different peer (A→B→C chains), not just back to the caller', () => {
+    const section = buildPeerBotContext([{ name: 'peer-bot-2', description: 'x' }]);
+    expect(section.toLowerCase()).toContain('a→b→c');
   });
 });
 
