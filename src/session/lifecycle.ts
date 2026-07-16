@@ -320,6 +320,8 @@ function createMessageManager(
     },
     // Tunable streaming cadence (ResolvedLimits.flushDelayMs → SessionConfig).
     flushDelayMs: ctx.config.flushDelayMs,
+    // Per-bot working-block display mode (config `workingBlock`).
+    workingBlockMode: ctx.ops.getPlatformWorkingBlock(session.platformId),
   });
 
   // Subscribe to events from MessageManager

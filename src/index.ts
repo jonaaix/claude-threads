@@ -9,6 +9,7 @@ import {
   isOverheadVisibility,
   OVERHEAD_VISIBILITY_VALUES,
   resolveAgentBackend,
+  isWorkingBlockMode,
   type MattermostPlatformConfig,
   type SlackPlatformConfig,
   type PlatformInstanceConfig,
@@ -667,7 +668,8 @@ async function startWithoutDaemon() {
       `platforms[${platformConfig.id}].agent`,
     ), typeof platformConfig.model === 'string' ? platformConfig.model : undefined,
     typeof platformConfig.description === 'string' ? platformConfig.description : undefined,
-    typeof platformConfig.workingDir === 'string' ? platformConfig.workingDir : undefined);
+    typeof platformConfig.workingDir === 'string' ? platformConfig.workingDir : undefined,
+    isWorkingBlockMode(platformConfig.workingBlock) ? platformConfig.workingBlock : undefined);
 
     // Wire up platform events
     wirePlatformEvents(platformConfig.id, client, session, ui);

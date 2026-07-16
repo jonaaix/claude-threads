@@ -541,6 +541,39 @@ describe('MessageManager', () => {
       // Two distinct posts were created (one per lane).
       expect(platform.createPost).toHaveBeenCalledTimes(2);
     });
+
+    it('hidden mode shows a live placeholder (no entries) and removes it at turn end', async () => {
+      const hidden = new MessageManager({
+        session,
+        platform,
+        postTracker: new PostTracker(),
+        sessionId: 'test:hidden',
+        threadId: 'thread-hidden',
+        registerPost: () => {},
+        updateLastMessage: () => {},
+        workingBlockMode: 'hidden',
+      });
+
+      await hidden.handleEvent({
+        type: 'assistant' as const,
+        message: {
+          content: [
+            { type: 'text', text: 'On it.' },
+            { type: 'tool_use', id: 't1', name: 'Read', input: { file_path: '/tmp/x.ts' } },
+          ],
+        },
+      });
+      await hidden.flush();
+
+      // Placeholder only — no tool entries leak into the working post.
+      expect(hidden.getWorkingPostContent()).toContain('Working…');
+      expect(hidden.getWorkingPostContent()).not.toContain('Read');
+
+      // Turn end (result) deletes the placeholder and resets the lane.
+      await hidden.handleEvent({ type: 'result' as const });
+      expect(platform.deletePost).toHaveBeenCalled();
+      expect(hidden.getWorkingPostContent()).toBe('');
+    });
   });
 
   describe('User Message Flow', () => {

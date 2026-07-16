@@ -184,6 +184,7 @@ function createMockSessionContext(sessions: Map<string, Session> = new Map()): S
       getPeerBots: mock(() => []),
       getPlatformModel: mock(() => undefined),
       getPlatformWorkingDir: mock(() => undefined),
+      getPlatformWorkingBlock: mock(() => undefined),
       resolveMentionedBot: mock(() => undefined),
       resolveHandoffTarget: mock(() => undefined),
       dispatchBotHandoff: mock(() => Promise.resolve()),

@@ -11,6 +11,7 @@
  */
 
 import type { PlatformClient, PlatformPost, PlatformFile } from '../platform/index.js';
+import type { WorkingBlockMode } from '../config/types.js';
 import type { PendingQuestionSet, Session } from '../session/types.js';
 import type { ClaudeEvent } from '../claude/cli.js';
 import { transformEvent, type TransformContext } from './transformer.js';
@@ -121,6 +122,8 @@ export interface MessageManagerOptions {
    * ResolvedLimits.flushDelayMs.
    */
   flushDelayMs?: number;
+  /** How this bot's working block is displayed. Default `'expanded'`. */
+  workingBlockMode?: WorkingBlockMode;
 }
 
 /**
@@ -242,6 +245,7 @@ export class MessageManager {
     this.workingExecutor = new WorkingExecutor({
       registerPost: options.registerPost,
       updateLastMessage: options.updateLastMessage,
+      mode: options.workingBlockMode,
     });
 
     this.taskListExecutor = new TaskListExecutor({
@@ -426,7 +430,7 @@ export class MessageManager {
     const flushOp = createFlushOp(this.sessionId, reason);
     await this.contentExecutor.executeFlush(flushOp, ctx);
     await this.workingExecutor.executeFlush(flushOp, ctx);
-    if (reason === 'result') this.workingExecutor.finalizeTurn();
+    if (reason === 'result') await this.workingExecutor.finalizeTurn(ctx);
   }
 
   /**

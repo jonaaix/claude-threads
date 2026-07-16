@@ -24,6 +24,15 @@ export type WorktreeMode = 'off' | 'prompt' | 'require';
  */
 export type OverheadVisibility = 'full' | 'minimal' | 'hidden';
 
+/** How a bot's "working" block (tool/thinking/status) is displayed. */
+export type WorkingBlockMode = 'expanded' | 'hidden';
+
+export const DEFAULT_WORKING_BLOCK_MODE: WorkingBlockMode = 'expanded';
+
+export function isWorkingBlockMode(value: unknown): value is WorkingBlockMode {
+  return value === 'expanded' || value === 'hidden';
+}
+
 export const OVERHEAD_VISIBILITY_VALUES: readonly OverheadVisibility[] = ['full', 'minimal', 'hidden'] as const;
 
 export const DEFAULT_OVERHEAD_VISIBILITY: OverheadVisibility = 'full';
@@ -309,6 +318,14 @@ export interface PlatformInstanceConfig {
    * the sticky's `description` / `footer` for platforms still rendering it.
    */
   stickyMessage?: OverheadVisibility;
+  /**
+   * How this bot's "working" block (tool calls / thinking / status) is shown.
+   * Default `'expanded'`: a live blockquote post with the entries. `'hidden'`:
+   * no working block — just a minimal live "🛠️ Working…" placeholder that
+   * updates while tools run and is removed when the turn ends. The real answer
+   * is always posted separately either way.
+   */
+  workingBlock?: WorkingBlockMode;
   // Platform-specific fields (TypeScript allows extra properties)
   [key: string]: unknown;
 }
