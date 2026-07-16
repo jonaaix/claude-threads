@@ -32,12 +32,24 @@ export interface BaseOperation {
 /**
  * Append content to the current streaming message.
  */
+/**
+ * Classifies streamed content: real answer `text` vs "working" content
+ * (`thinking` / `tool` invocation / tool-result `status`). Lets the display
+ * layer route working content into its own post, separate from the answer.
+ */
+export type ContentKind = 'text' | 'thinking' | 'tool' | 'status';
+
+/** True for "working" content (everything that isn't the real answer text). */
+export function isWorkingKind(kind: ContentKind | undefined): boolean {
+  return kind === 'thinking' || kind === 'tool' || kind === 'status';
+}
+
 export interface AppendContentOp extends BaseOperation {
   readonly type: 'append_content';
   /** Content to append (raw markdown) */
   readonly content: string;
-  /** Whether this content includes tool use formatting */
-  readonly isToolOutput?: boolean;
+  /** Content classification (undefined = real answer text). */
+  readonly kind?: ContentKind;
 }
 
 /**
@@ -326,14 +338,14 @@ export function isLifecycleOp(op: MessageOperation): op is LifecycleOp {
 export function createAppendContentOp(
   sessionId: string,
   content: string,
-  isToolOutput?: boolean
+  kind?: ContentKind
 ): AppendContentOp {
   return {
     type: 'append_content',
     sessionId,
     timestamp: Date.now(),
     content,
-    isToolOutput,
+    kind,
   };
 }
 

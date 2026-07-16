@@ -237,15 +237,15 @@ describe('ContentExecutor', () => {
 
       // First: text + tool, then flush (simulates tool_result)
       await executor.executeAppend(createAppendContentOp('test', 'Sure! Let me try.'), ctx);
-      await executor.executeAppend(createAppendContentOp('test', '📁 Bash `pwd`', true), ctx);
+      await executor.executeAppend(createAppendContentOp('test', '📁 Bash `pwd`', 'tool'), ctx);
       await executor.executeFlush(createFlushOp('test', 'tool_complete'), ctx);
 
       // Second: another tool, then flush
-      await executor.executeAppend(createAppendContentOp('test', '🔍 Glob `*.ts`', true), ctx);
+      await executor.executeAppend(createAppendContentOp('test', '🔍 Glob `*.ts`', 'tool'), ctx);
       await executor.executeFlush(createFlushOp('test', 'tool_complete'), ctx);
 
       // Third: another tool, then flush
-      await executor.executeAppend(createAppendContentOp('test', '📁 Read `file.ts`', true), ctx);
+      await executor.executeAppend(createAppendContentOp('test', '📁 Read `file.ts`', 'tool'), ctx);
       await executor.executeFlush(createFlushOp('test', 'tool_complete'), ctx);
 
       // Verify proper spacing was added between each flush

@@ -145,24 +145,26 @@ function transformAssistant(
         if (result.display && !result.hidden) {
           // Flush any accumulated text before the tool
           flushTextBuffer();
-          // Create separate operation for tool with isToolOutput=true
-          operations.push(createAppendContentOp(ctx.sessionId, result.display, true));
+          // Create separate operation for tool (working content)
+          operations.push(createAppendContentOp(ctx.sessionId, result.display, 'tool'));
         }
       }
     } else if (block.type === 'thinking' && block.thinking) {
-      // Extended thinking - show abbreviated version
+      // Extended thinking - show abbreviated version. Working content: flush any
+      // real text first so it can go to its own post, then emit thinking tagged.
       const thinking = block.thinking as string;
       const preview = truncateAtWord(thinking, 200);
       const formatted = ctx.formatter.formatBlockquote(
         `💭 ${ctx.formatter.formatItalic(preview)}`
       );
-      textBuffer.push(formatted);
+      flushTextBuffer();
+      operations.push(createAppendContentOp(ctx.sessionId, formatted, 'thinking'));
     } else if (block.type === 'server_tool_use' && block.name) {
-      // Server-managed tools (e.g., web search) - treat as tool output
+      // Server-managed tools (e.g., web search) - working content
       flushTextBuffer();
       const inputStr = block.input ? JSON.stringify(block.input).substring(0, 50) : '';
       operations.push(
-        createAppendContentOp(ctx.sessionId, `🌐 ${ctx.formatter.formatBold(block.name)} ${inputStr}`, true)
+        createAppendContentOp(ctx.sessionId, `🌐 ${ctx.formatter.formatBold(block.name)} ${inputStr}`, 'tool')
       );
     }
   }
@@ -209,7 +211,7 @@ function transformToolUse(
   });
 
   if (result.display && !result.hidden) {
-    return [createAppendContentOp(ctx.sessionId, result.display, true)];
+    return [createAppendContentOp(ctx.sessionId, result.display, 'tool')];
   }
 
   return [];
@@ -255,7 +257,7 @@ function transformToolResult(
   const icon = result.is_error ? '❌' : '✓';
   const errorNote = result.is_error ? ' Error' : '';
   operations.push(
-    createAppendContentOp(ctx.sessionId, `  ↳ ${icon}${errorNote}${elapsed}`, true)
+    createAppendContentOp(ctx.sessionId, `  ↳ ${icon}${errorNote}${elapsed}`, 'status')
   );
 
   // Tool results are a natural break point - suggest flush

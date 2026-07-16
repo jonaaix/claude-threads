@@ -12,6 +12,7 @@ import { truncateMessageSafely } from '../../platform/utils.js';
 import { formatShortId } from '../../utils/format.js';
 import { MIN_BREAK_THRESHOLD, splitContentForHeight } from '../content-breaker.js';
 import type { AppendContentOp, FlushOp } from '../types.js';
+import { isWorkingKind } from '../types.js';
 import type { ExecutorContext, ContentState } from './types.js';
 import { BaseExecutor, type ExecutorOptions } from './base.js';
 
@@ -139,8 +140,9 @@ export class ContentExecutor extends BaseExecutor<ContentState> {
     }
     this.state.pendingContent += op.content;
 
-    // Add spacing after tool output so next content is separated
-    if (op.isToolOutput) {
+    // Add spacing after working content (tool/thinking/status) so next content
+    // is separated.
+    if (isWorkingKind(op.kind)) {
       this.state.pendingContent += '\n\n';
     }
   }
