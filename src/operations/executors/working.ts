@@ -114,12 +114,16 @@ export class WorkingExecutor extends BaseExecutor<WorkingState> {
    */
   private renderExpanded(ctx: ExecutorContext): string {
     const header = ctx.formatter.formatBold('🛠️ Working');
+    // A literal underline so the header reads as a heading, set off from the
+    // first entry (a plain line renders reliably inside a blockquote, unlike a
+    // markdown `---` rule which is ambiguous there).
+    const underline = '─'.repeat(14);
     const { maxLength } = ctx.platform.getMessageLimits();
     const marker = ctx.formatter.formatItalic('… (earlier steps omitted)');
     // Budget for the raw body; leave a margin for the header + per-line "> "
     // blockquote prefixes.
-    const budget = maxLength - header.length - marker.length - 200;
-    const prefix: string[] = [header];
+    const budget = maxLength - header.length - underline.length - marker.length - 200;
+    const prefix: string[] = [header, underline];
     let body = this.state.content;
     if (budget > 0 && body.length > budget) {
       body = body.slice(body.length - budget);

@@ -22,7 +22,9 @@ export const bashToolFormatter: ToolFormatter = {
   format(toolName: string, input: ToolInput, options: ToolFormatOptions): ToolFormatResult | null {
     if (toolName !== 'Bash') return null;
 
-    const { formatter, maxCommandLength = 50, worktreeInfo } = options;
+    // 80 chars = the common code line-length default; the working block is its
+    // own post now, so there's room to show fuller commands than the old 50.
+    const { formatter, maxCommandLength = 80, worktreeInfo } = options;
 
     let cmd = (input.command as string) || '';
 
