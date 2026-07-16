@@ -31,6 +31,7 @@ export type {
 
 // Executors
 export { ContentExecutor, type ContentExecutorOptions } from './content.js';
+export { WorkingExecutor } from './working.js';
 export { TaskListExecutor } from './task-list.js';
 export { SubagentExecutor, type SubagentExecutorOptions } from './subagent.js';
 export { SystemExecutor } from './system.js';

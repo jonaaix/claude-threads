@@ -20,7 +20,8 @@
  * Type of post content.
  */
 export type PostType =
-  | 'content'          // Regular content post (Claude's response)
+  | 'content'          // Regular content post (Claude's real answer text)
+  | 'working'          // Working post (tool calls / thinking / status for a turn)
   | 'task_list'        // Task list post (TodoWrite)
   | 'session_header'   // Session start header
   | 'question'         // AskUserQuestion post

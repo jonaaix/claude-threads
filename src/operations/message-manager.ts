@@ -16,6 +16,7 @@ import type { ClaudeEvent } from '../claude/cli.js';
 import { transformEvent, type TransformContext } from './transformer.js';
 import {
   ContentExecutor,
+  WorkingExecutor,
   TaskListExecutor,
   QuestionApprovalExecutor,
   MessageApprovalExecutor,
@@ -58,6 +59,7 @@ import {
   isSubagentOp,
   isStatusUpdateOp,
   isLifecycleOp,
+  isWorkingKind,
   createFlushOp,
 } from './types.js';
 import { createLogger } from '../utils/logger.js';
@@ -140,6 +142,7 @@ export class MessageManager {
 
   // Executors
   private contentExecutor: ContentExecutor;
+  private workingExecutor: WorkingExecutor;
   private taskListExecutor: TaskListExecutor;
   private questionApprovalExecutor: QuestionApprovalExecutor;
   private messageApprovalExecutor: MessageApprovalExecutor;
@@ -234,6 +237,11 @@ export class MessageManager {
       onBumpTaskListToBottom: async () => {
         await this.taskListExecutor.bumpToBottom(this.getExecutorContext());
       },
+    });
+
+    this.workingExecutor = new WorkingExecutor({
+      registerPost: options.registerPost,
+      updateLastMessage: options.updateLastMessage,
     });
 
     this.taskListExecutor = new TaskListExecutor({
@@ -398,11 +406,27 @@ export class MessageManager {
    * Handle content append operation
    */
   private async handleContentOp(op: AppendContentOp, ctx: ExecutorContext): Promise<void> {
-    // Append content to executor
-    await this.contentExecutor.executeAppend(op, ctx);
+    // Route working content (tool/thinking/status) into its own post; the real
+    // answer text stays in the content post so the two never mix.
+    if (isWorkingKind(op.kind)) {
+      await this.workingExecutor.executeAppend(op, ctx);
+    } else {
+      await this.contentExecutor.executeAppend(op, ctx);
+    }
 
     // Schedule flush if not already scheduled
     this.scheduleFlush(ctx);
+  }
+
+  /**
+   * Flush both the content and working lanes. On the turn-ending `result` flush,
+   * finalize the working post so the next turn opens a fresh one.
+   */
+  private async flushExecutors(reason: FlushOp['reason'], ctx: ExecutorContext): Promise<void> {
+    const flushOp = createFlushOp(this.sessionId, reason);
+    await this.contentExecutor.executeFlush(flushOp, ctx);
+    await this.workingExecutor.executeFlush(flushOp, ctx);
+    if (reason === 'result') this.workingExecutor.finalizeTurn();
   }
 
   /**
@@ -412,8 +436,8 @@ export class MessageManager {
     // Cancel any pending scheduled flush
     this.cancelScheduledFlush();
 
-    // Execute the flush
-    await this.contentExecutor.executeFlush(op, ctx);
+    // Execute the flush across both lanes
+    await this.flushExecutors(op.reason, ctx);
   }
 
   /**
@@ -424,8 +448,7 @@ export class MessageManager {
 
     this.flushTimer = setTimeout(async () => {
       this.flushTimer = null;
-      const flushOp = createFlushOp(this.sessionId, 'soft_threshold');
-      await this.contentExecutor.executeFlush(flushOp, ctx);
+      await this.flushExecutors('soft_threshold', ctx);
     }, this.flushDelayMs);
   }
 
@@ -444,8 +467,7 @@ export class MessageManager {
    */
   async flush(): Promise<void> {
     this.cancelScheduledFlush();
-    const flushOp = createFlushOp(this.sessionId, 'explicit');
-    await this.contentExecutor.executeFlush(flushOp, this.getExecutorContext());
+    await this.flushExecutors('explicit', this.getExecutorContext());
   }
 
   /**
@@ -816,6 +838,14 @@ export class MessageManager {
   }
 
   /**
+   * Get the current turn's working post content (tool/thinking/status),
+   * as last rendered to the platform. Empty before the first working flush.
+   */
+  getWorkingPostContent(): string {
+    return this.workingExecutor.getState().lastRendered;
+  }
+
+  /**
    * Bump task list to bottom
    */
   async bumpTaskList(): Promise<void> {
@@ -1169,6 +1199,7 @@ export class MessageManager {
     this.cancelScheduledFlush();
     this.toolStartTimes.clear();
     this.contentExecutor.reset();
+    this.workingExecutor.reset();
     this.taskListExecutor.reset();
     this.questionApprovalExecutor.reset();
     this.messageApprovalExecutor.reset();

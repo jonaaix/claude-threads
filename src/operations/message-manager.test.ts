@@ -447,7 +447,7 @@ describe('MessageManager', () => {
       await managerWithWorktree.flush();
 
       // Check the post content contains shortened path
-      const postContent = managerWithWorktree.getCurrentPostContent();
+      const postContent = managerWithWorktree.getWorkingPostContent();
       expect(postContent).toContain('[feature/my-branch]');
       expect(postContent).not.toContain('testuser-myrepo--feature-branch');
     });
@@ -486,7 +486,7 @@ describe('MessageManager', () => {
       await managerNoWorktree.flush();
 
       // Check the post content contains shortened path
-      const postContent = managerNoWorktree.getCurrentPostContent();
+      const postContent = managerNoWorktree.getWorkingPostContent();
       expect(postContent).toContain('[feature/my-branch]');
       expect(postContent).not.toContain('testuser-myrepo--feature-branch');
     });
@@ -512,9 +512,34 @@ describe('MessageManager', () => {
       await manager.flush();
 
       // Should use ~ fallback instead of [branch]
-      const postContent = manager.getCurrentPostContent();
+      const postContent = manager.getWorkingPostContent();
       expect(postContent).toContain('~/.claude-threads');
       expect(postContent).not.toContain('[');
+    });
+  });
+
+  describe('Working post separation', () => {
+    it('routes tool output to a separate working post, keeping the answer post clean', async () => {
+      // One assistant turn with real text + a tool use.
+      await manager.handleEvent({
+        type: 'assistant' as const,
+        message: {
+          content: [
+            { type: 'text', text: 'Sure, let me check the file.' },
+            { type: 'tool_use', id: 't1', name: 'Read', input: { file_path: '/tmp/x.ts' } },
+          ],
+        },
+      });
+      await manager.flush();
+
+      // Real answer → content post; tool → working post; they don't mix.
+      expect(manager.getCurrentPostContent()).toContain('Sure, let me check the file.');
+      expect(manager.getCurrentPostContent()).not.toContain('Read');
+      expect(manager.getWorkingPostContent()).toContain('Read');
+      expect(manager.getWorkingPostContent()).not.toContain('Sure, let me check the file.');
+
+      // Two distinct posts were created (one per lane).
+      expect(platform.createPost).toHaveBeenCalledTimes(2);
     });
   });
 
