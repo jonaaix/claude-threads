@@ -77,16 +77,27 @@ export class WorkingExecutor extends BaseExecutor<WorkingState> {
     this.state.lastRendered = '';
   }
 
-  /** Render the working block: a header + the accumulated entries, tail-capped. */
+  /**
+   * Render the working block: a header + the accumulated entries, rendered as a
+   * blockquote so the whole thing visually sets itself apart from real messages
+   * while markdown inside (bold/code/emoji) still renders — unlike a code fence.
+   * Tail-capped (recent steps matter more than the first).
+   */
   private render(ctx: ExecutorContext): string {
     const header = ctx.formatter.formatBold('🛠️ Working');
     const { maxLength } = ctx.platform.getMessageLimits();
-    const full = `${header}\n${this.state.content}`;
-    if (full.length <= maxLength) return full;
-    // Keep the most recent entries (progress matters more than the first steps).
     const marker = ctx.formatter.formatItalic('… (earlier steps omitted)');
-    const budget = Math.max(0, maxLength - header.length - marker.length - 2);
-    const tail = this.state.content.slice(Math.max(0, this.state.content.length - budget));
-    return `${header}\n${marker}\n${tail}`;
+    // Budget for the raw body; leave a margin for the header + per-line "> "
+    // blockquote prefixes.
+    const budget = maxLength - header.length - marker.length - 200;
+    const prefix: string[] = [header];
+    let body = this.state.content;
+    if (budget > 0 && body.length > budget) {
+      body = body.slice(body.length - budget);
+      prefix.push(marker);
+    }
+    return [...prefix, ...body.split('\n')]
+      .map(line => ctx.formatter.formatBlockquote(line))
+      .join('\n');
   }
 }
