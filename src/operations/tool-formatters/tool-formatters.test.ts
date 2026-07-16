@@ -266,12 +266,19 @@ describe('Bash Formatter', () => {
     expect(result!.isDestructive).toBe(true);
   });
 
-  it('truncates long commands', () => {
-    const longCommand = 'x'.repeat(100);
+  it('truncates pathologically long commands (safety net; real commands show in full)', () => {
+    const longCommand = 'x'.repeat(5000);
     const result = bashToolFormatter.format('Bash', { command: longCommand }, options);
 
     expect(result!.display).toContain('...');
     expect(result!.display!.length).toBeLessThan(longCommand.length);
+  });
+
+  it('does not truncate a normal-length command', () => {
+    const cmd = 'grep -rn "table\\|migration" vendor/aaix/laravel-patches/src/ --include=*.php -l';
+    const result = bashToolFormatter.format('Bash', { command: cmd }, options);
+    expect(result!.display).toContain(cmd);
+    expect(result!.display).not.toContain('...');
   });
 
   it('shortens worktree paths in commands', () => {

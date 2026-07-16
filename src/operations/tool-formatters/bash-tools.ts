@@ -22,9 +22,10 @@ export const bashToolFormatter: ToolFormatter = {
   format(toolName: string, input: ToolInput, options: ToolFormatOptions): ToolFormatResult | null {
     if (toolName !== 'Bash') return null;
 
-    // 80 chars = the common code line-length default; the working block is its
-    // own post now, so there's room to show fuller commands than the old 50.
-    const { formatter, maxCommandLength = 80, worktreeInfo } = options;
+    // TEMP (evaluation): truncation effectively disabled — real commands never
+    // hit 4000 chars, so they show in full. The safety net still caps pathological
+    // input. Final cap TBD once we've eyeballed full commands in the working block.
+    const { formatter, maxCommandLength = 4000, worktreeInfo } = options;
 
     let cmd = (input.command as string) || '';
 
