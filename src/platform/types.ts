@@ -56,10 +56,33 @@ export interface PlatformFile {
 /**
  * Normalized thread message for context retrieval
  */
+/**
+ * Semantic kind of a post, carried as platform metadata (Mattermost post
+ * `props.ct_kind`). Lets history read-back tell a real answer message apart from
+ * working/tool/status/system posts. Mirrors the operations-layer PostType
+ * strings ('content', 'working', 'system', …). Loose (string) on the wire to
+ * keep the platform layer decoupled from the operations layer.
+ */
+export type PostKind = string;
+
+/** Options accepted by post create/update to tag the post's kind on the wire. */
+export interface PostOptions {
+  kind?: PostKind;
+}
+
+/** A file attachment surfaced in thread history, with a URL a bot can fetch. */
+export interface ThreadFile {
+  id: string;
+  name: string;
+  url: string;
+}
+
 export interface ThreadMessage {
   id: string;           // Message/post ID
   userId: string;       // Author's user ID
   username: string;     // Author's username
   message: string;      // Message content
   createAt: number;     // Timestamp (ms since epoch)
+  kind?: PostKind;      // Post kind from platform metadata; undefined for legacy/foreign posts
+  files?: ThreadFile[]; // File attachments (with fetch URLs); undefined/empty when none
 }

@@ -31,6 +31,7 @@ import type {
   PlatformReaction,
   PlatformFile,
   ThreadMessage,
+  PostOptions,
 } from '../index.js';
 import type { PlatformFormatter } from '../formatter.js';
 import { SlackFormatter } from './formatter.js';
@@ -825,7 +826,7 @@ export class SlackClient extends BasePlatformClient {
   async createPost(
     message: string,
     threadId?: string,
-    options?: { unfurl?: boolean }
+    options?: PostOptions & { unfurl?: boolean }
   ): Promise<PlatformPost> {
     // Disable unfurling for channel-level posts (sticky message) by default
     // Thread messages can have previews unless explicitly disabled

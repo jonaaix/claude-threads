@@ -27,6 +27,7 @@ import type {
   PlatformPost,
   PlatformFile,
   ThreadMessage,
+  PostOptions,
 } from './types.js';
 import type { PlatformFormatter } from './formatter.js';
 
@@ -112,12 +113,12 @@ export abstract class BasePlatformClient extends EventEmitter implements Platfor
   /**
    * Create a new post/message.
    */
-  abstract createPost(message: string, threadId?: string): Promise<PlatformPost>;
+  abstract createPost(message: string, threadId?: string, options?: PostOptions): Promise<PlatformPost>;
 
   /**
    * Update an existing post/message.
    */
-  abstract updatePost(postId: string, message: string): Promise<PlatformPost>;
+  abstract updatePost(postId: string, message: string, options?: PostOptions): Promise<PlatformPost>;
 
   /**
    * Get a post by ID.
@@ -270,9 +271,10 @@ export abstract class BasePlatformClient extends EventEmitter implements Platfor
   async createInteractivePost(
     message: string,
     reactions: string[],
-    threadId?: string
+    threadId?: string,
+    options?: PostOptions
   ): Promise<PlatformPost> {
-    const post = await this.createPost(message, threadId);
+    const post = await this.createPost(message, threadId, options);
 
     // Add each reaction option, continuing even if some fail
     for (const emoji of reactions) {

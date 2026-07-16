@@ -5,6 +5,7 @@ import type {
   PlatformReaction,
   PlatformFile,
   ThreadMessage,
+  PostOptions,
 } from './types.js';
 import type { PlatformFormatter } from './formatter.js';
 
@@ -158,27 +159,30 @@ export interface PlatformClient extends EventEmitter {
    * @param threadId - Optional thread parent ID
    * @returns The created post
    */
-  createPost(message: string, threadId?: string): Promise<PlatformPost>;
+  createPost(message: string, threadId?: string, options?: PostOptions): Promise<PlatformPost>;
 
   /**
    * Update an existing post/message
    * @param postId - Post ID to update
    * @param message - New message text
+   * @param options - Optional post metadata (e.g. kind)
    * @returns The updated post
    */
-  updatePost(postId: string, message: string): Promise<PlatformPost>;
+  updatePost(postId: string, message: string, options?: PostOptions): Promise<PlatformPost>;
 
   /**
    * Create a post with reaction options (for interactive prompts)
    * @param message - Message text
    * @param reactions - Array of emoji names to add as options
    * @param threadId - Optional thread parent ID
+   * @param options - Optional post metadata (e.g. kind)
    * @returns The created post
    */
   createInteractivePost(
     message: string,
     reactions: string[],
-    threadId?: string
+    threadId?: string,
+    options?: PostOptions
   ): Promise<PlatformPost>;
 
   /**

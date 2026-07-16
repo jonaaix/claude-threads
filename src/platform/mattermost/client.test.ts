@@ -234,6 +234,13 @@ describe('MattermostClient HTTP methods', () => {
     expect((fetchCalls[0].body as Record<string, unknown>).root_id).toBe('thread-abc');
   });
 
+  it('createPost tags props.ct_kind when a kind is given', async () => {
+    fetchResponder = () =>
+      jsonResponse({ id: 'p', channel_id: 'c', user_id: 'u', message: '', root_id: 't', create_at: 1 });
+    await makeClient().createPost('hi', 'thread-1', { kind: 'content' });
+    expect((fetchCalls[0].body as Record<string, unknown>).props).toEqual({ ct_kind: 'content' });
+  });
+
   it('updatePost PUTs to /posts/:id', async () => {
     fetchResponder = () =>
       jsonResponse({ id: 'p-1', channel_id: 'c', user_id: 'u', message: 'updated', root_id: '', create_at: 1 });
@@ -321,6 +328,37 @@ describe('MattermostClient HTTP methods', () => {
     const history = await c.getThreadHistory('thread-1', { excludeBotMessages: true });
     expect(history.map(m => m.id)).toEqual(['p-2', 'p-1']);
     expect(history.every(m => m.username === 'alice')).toBe(true);
+  });
+
+  it('getThreadHistory surfaces post kind (props.ct_kind) and file URLs', async () => {
+    const c = makeClient();
+    const responders: Record<string, Response> = {
+      '/users/me': jsonResponse({ id: 'bot-id', username: 'claude', email: '', first_name: '' }),
+      '/posts/thread-1/thread': jsonResponse({
+        order: ['p-1', 'p-2'],
+        posts: {
+          'p-1': { id: 'p-1', channel_id: 'c', user_id: 'u-alice', message: 'answer', root_id: '', create_at: 100, props: { ct_kind: 'content' } },
+          'p-2': { id: 'p-2', channel_id: 'c', user_id: 'u-alice', message: 'shot', root_id: '', create_at: 200, props: { ct_kind: 'working' }, metadata: { files: [{ id: 'f1', name: 'shot.png', size: 1, mime_type: 'image/png', extension: 'png' }] } },
+        },
+      }),
+      '/users/u-alice': jsonResponse({ id: 'u-alice', username: 'alice', email: '', first_name: 'Alice' }),
+    };
+    fetchResponder = (url) => {
+      for (const [suffix, response] of Object.entries(responders)) {
+        if (url.includes(suffix)) return response.clone();
+      }
+      return jsonResponse({});
+    };
+
+    await c.getBotUser();
+    const history = await c.getThreadHistory('thread-1');
+    const byId = Object.fromEntries(history.map(m => [m.id, m]));
+    expect(byId['p-1'].kind).toBe('content');
+    expect(byId['p-1'].files).toBeUndefined();
+    expect(byId['p-2'].kind).toBe('working');
+    expect(byId['p-2'].files).toEqual([
+      { id: 'f1', name: 'shot.png', url: 'https://chat.example.test/api/v4/files/f1' },
+    ]);
   });
 
   it('getThreadHistory respects limit (returns most recent N)', async () => {

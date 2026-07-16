@@ -462,15 +462,17 @@ export class MessageManager {
       contentBreaker: this.contentBreaker,
       threadLogger: this.session.threadLogger,
 
-      // Helper methods that combine create + register + track
+      // Helper methods that combine create + register + track. The post `type`
+      // (PostType) is also tagged on the platform as `kind` so history read-back
+      // can distinguish real answer posts from working/status ones.
       createPost: async (content, options) => {
-        const post = await this.platform.createPost(content, this.threadId);
+        const post = await this.platform.createPost(content, this.threadId, { kind: options.type });
         this.registerPost(post.id, options);
         this.updateLastMessage(post);
         return post;
       },
       createInteractivePost: async (content, reactions, options) => {
-        const post = await this.platform.createInteractivePost(content, reactions, this.threadId);
+        const post = await this.platform.createInteractivePost(content, reactions, this.threadId, { kind: options.type });
         this.registerPost(post.id, options);
         this.updateLastMessage(post);
         return post;

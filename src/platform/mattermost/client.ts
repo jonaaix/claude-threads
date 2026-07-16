@@ -25,6 +25,8 @@ import type {
   PlatformReaction,
   PlatformFile,
   ThreadMessage,
+  PostOptions,
+  ThreadFile,
 } from '../index.js';
 import type { PlatformFormatter } from '../formatter.js';
 import { MattermostFormatter } from './formatter.js';
@@ -75,6 +77,22 @@ export class MattermostClient extends BasePlatformClient {
       displayName,
       email: mattermostUser.email,
     };
+  }
+
+  /**
+   * Extract a post's file attachments as fetchable ThreadFiles. Prefers the
+   * richer `metadata.files` (has names); falls back to bare `file_ids`. The URL
+   * is the Mattermost file API endpoint (a bot fetches it with its own token).
+   */
+  private threadFilesOf(post: MattermostPost): ThreadFile[] | undefined {
+    const metaFiles = post.metadata?.files;
+    if (metaFiles && metaFiles.length > 0) {
+      return metaFiles.map(f => ({ id: f.id, name: f.name, url: `${this.url}/api/v4/files/${f.id}` }));
+    }
+    if (post.file_ids && post.file_ids.length > 0) {
+      return post.file_ids.map(id => ({ id, name: id, url: `${this.url}/api/v4/files/${id}` }));
+    }
+    return undefined;
   }
 
   private normalizePlatformPost(mattermostPost: MattermostPost): PlatformPost {
@@ -295,23 +313,28 @@ export class MattermostClient extends BasePlatformClient {
   // recognized by all Mattermost instances (e.g., :stopwatch:, :pause:).
   async createPost(
     message: string,
-    threadId?: string
+    threadId?: string,
+    options?: PostOptions
   ): Promise<PlatformPost> {
     const request: CreatePostRequest = {
       channel_id: this.channelId,
       message,
       // Only include root_id if it's a non-empty string (Mattermost rejects empty string)
       root_id: threadId || undefined,
+      // Tag the post's kind so history read-back can tell real answer messages
+      // apart from working/tool/status posts (see getThreadHistory).
+      props: options?.kind ? { ct_kind: options.kind } : undefined,
     };
     const post = await this.api<MattermostPost>('POST', '/posts', request);
     return this.normalizePlatformPost(post);
   }
 
   // Update a message (for streaming updates)
-  async updatePost(postId: string, message: string): Promise<PlatformPost> {
+  async updatePost(postId: string, message: string, options?: PostOptions): Promise<PlatformPost> {
     const request: UpdatePostRequest = {
       id: postId,
       message,
+      ...(options?.kind ? { props: { ct_kind: options.kind } } : {}),
     };
     const post = await this.api<MattermostPost>('PUT', `/posts/${postId}`, request);
     return this.normalizePlatformPost(post);
@@ -469,6 +492,8 @@ export class MattermostClient extends BasePlatformClient {
           username,
           message: post.message,
           createAt: post.create_at,
+          kind: typeof post.props?.ct_kind === 'string' ? post.props.ct_kind : undefined,
+          files: this.threadFilesOf(post),
         });
       }
 
