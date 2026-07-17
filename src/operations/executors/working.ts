@@ -114,6 +114,11 @@ export class WorkingExecutor extends BaseExecutor<WorkingState> {
    */
   private renderExpanded(ctx: ExecutorContext): string {
     const header = ctx.formatter.formatBold('🛠️ Working');
+    // Breathing room ABOVE the header: the blockquote otherwise starts flush
+    // under the author row. A quoted zero-width space renders as a blank line
+    // inside the quote — a truly empty `> ` first line would be collapsed by
+    // the markdown renderer.
+    const topPad = '\u200B';
     // A short, light underline so the header reads as a heading, set off from
     // the first entry. En-dashes render thinner than a solid `─` rule, and a
     // plain line is reliable inside a blockquote (a markdown `---` is ambiguous
@@ -124,7 +129,7 @@ export class WorkingExecutor extends BaseExecutor<WorkingState> {
     // Budget for the raw body; leave a margin for the header + per-line "> "
     // blockquote prefixes.
     const budget = maxLength - header.length - underline.length - marker.length - 200;
-    const prefix: string[] = [header, underline];
+    const prefix: string[] = [topPad, header, underline];
     let body = this.state.content;
     if (budget > 0 && body.length > budget) {
       body = body.slice(body.length - budget);

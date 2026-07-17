@@ -542,6 +542,22 @@ describe('MessageManager', () => {
       expect(platform.createPost).toHaveBeenCalledTimes(2);
     });
 
+    it('pads the top of the working block so the header has breathing room', async () => {
+      await manager.handleEvent({
+        type: 'assistant' as const,
+        message: {
+          content: [{ type: 'tool_use', id: 't1', name: 'Read', input: { file_path: '/tmp/x.ts' } }],
+        },
+      });
+      await manager.flush();
+
+      // First line is a quoted zero-width space (a truly empty `> ` line would
+      // be collapsed by the markdown renderer), THEN the header.
+      const lines = manager.getWorkingPostContent().split('\n');
+      expect(lines[0]).toBe('> \u200B');
+      expect(lines[1]).toContain('Working');
+    });
+
     it('hidden mode shows a live placeholder (no entries) and removes it at turn end', async () => {
       const hidden = new MessageManager({
         session,
