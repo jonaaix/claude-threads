@@ -296,7 +296,7 @@ export function generateChatPlatformPrompt(identity?: AgentIdentity): string {
   const userCommands = COMMAND_REGISTRY
     .filter(cmd =>
       cmd.category !== 'passthrough' &&
-      ['stop', 'escape', 'approve', 'invite', 'kick', 'cd', 'permissions', 'update'].includes(cmd.command)
+      ['stop', 'escape', 'pause', 'approve', 'invite', 'kick', 'cd', 'permissions', 'update'].includes(cmd.command)
     );
 
   // Format user commands section

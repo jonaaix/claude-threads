@@ -8,6 +8,7 @@
 export {
   // Session control
   cancelSession,
+  pauseSession,
   interruptSession,
   approvePendingPlan,
 

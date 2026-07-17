@@ -124,6 +124,21 @@ const handleEscape: CommandHandler = async (ctx) => {
 };
 
 /**
+ * Handle !pause command — a user-triggered idle timeout: ends the agent
+ * process (freeing its session slot) but keeps the session resumable via the
+ * 🔄 reaction or a new message, unlike !stop which ends it for good.
+ */
+const handlePause: CommandHandler = async (ctx) => {
+  if (ctx.commandContext === 'first-message') {
+    return { handled: false }; // nothing to pause yet
+  }
+  if (ctx.isAllowed) {
+    await ctx.sessionManager.pauseSession(ctx.threadId, ctx.username);
+  }
+  return { handled: true };
+};
+
+/**
  * Handle !approve command.
  */
 const handleApprove: CommandHandler = async (ctx) => {
@@ -465,6 +480,7 @@ handlers.set('release-notes', handleReleaseNotes);
 handlers.set('update', handleUpdate);
 handlers.set('stop', handleStop);
 handlers.set('escape', handleEscape);
+handlers.set('pause', handlePause);
 handlers.set('approve', handleApprove);
 handlers.set('invite', handleInvite);
 handlers.set('kick', handleKick);

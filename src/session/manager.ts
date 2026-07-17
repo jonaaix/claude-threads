@@ -1513,6 +1513,12 @@ export class SessionManager extends EventEmitter {
     await commands.cancelSession(session, username, this.getContext());
   }
 
+  async pauseSession(threadId: string, username: string, platformId?: string): Promise<void> {
+    const session = this.findSessionByThreadId(threadId, platformId);
+    if (!session) return;
+    await commands.pauseSession(session, username, this.getContext());
+  }
+
   async interruptSession(threadId: string, username: string, platformId?: string): Promise<void> {
     const session = this.findSessionByThreadId(threadId, platformId);
     if (!session) return;

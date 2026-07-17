@@ -14,7 +14,7 @@ import {
   effectivePermissionMode,
 } from '../../config/index.js';
 import type { PermissionMode } from '../../config/index.js';
-import { handleRateLimit } from '../../session/lifecycle.js';
+import { handleRateLimit, killSession } from '../../session/lifecycle.js';
 import { ClaudeCli } from '../../claude/cli.js';
 import { buildRestartCliOptions } from '../../claude/restart-options.js';
 import { randomUUID } from 'crypto';
@@ -217,6 +217,43 @@ export async function cancelSession(
   await post(session, 'cancelled', `${formatter.formatBold('Session cancelled')} by ${formatter.formatUserMention(username)}`);
 
   await ctx.ops.killSession(session.threadId);
+}
+
+/**
+ * Pause a session (like `!pause`): a user-triggered idle timeout. Kills the
+ * agent process and frees its slot but KEEPS the persisted state, so the
+ * session can be resumed via the 🔄 reaction or a new message in the thread —
+ * unlike `!stop`, which unpersists and ends the conversation for good.
+ * Mirrors the idle-timeout sequence in `cleanupIdleSessions` step for step:
+ * post-with-resume-hint → mark `paused` → persist → kill without unpersist.
+ */
+export async function pauseSession(
+  session: Session,
+  username: string,
+  ctx: SessionContext
+): Promise<void> {
+  sessionLog(session).info(`⏸️ Paused by @${username}`);
+  session.threadLogger?.logCommand('pause', undefined, username);
+
+  const formatter = session.platform.getFormatter();
+  try {
+    const pausePost = await post(
+      session,
+      'interrupt',
+      `${formatter.formatBold('Session paused')} by ${formatter.formatUserMention(username)}\n\n💡 React with 🔄 to resume, or send a new message to continue.`
+    );
+    // The resume-from-reaction flow finds the persisted session via this post
+    // id, so it must be set (and registered) BEFORE persistSession below.
+    session.lifecyclePostId = pausePost.id;
+    ctx.ops.registerPost(pausePost.id, session.threadId);
+  } catch {
+    // Posting failed (platform hiccup) — still pause; the session stays
+    // resumable via a new message in the thread.
+  }
+
+  transitionTo(session, 'paused');
+  ctx.ops.persistSession(session);
+  await killSession(session, false, ctx);
 }
 
 /**

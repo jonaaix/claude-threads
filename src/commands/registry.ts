@@ -146,6 +146,13 @@ export const COMMAND_REGISTRY: CommandDefinition[] = [
     claudeNotes: 'Would interrupt your own session - do not use',
   },
   {
+    command: 'pause',
+    description: 'Pause this session (frees its slot; resume later with 🔄 or a new message)',
+    category: 'session',
+    audience: 'user',
+    claudeNotes: 'Would pause your own session - do not use',
+  },
+  {
     command: 'approve',
     description: 'Approve pending plan (alternative to 👍 reaction)',
     category: 'session',

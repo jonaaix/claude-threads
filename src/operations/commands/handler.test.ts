@@ -58,6 +58,8 @@ function createMockMessageManager(initialApproval?: { postId: string; type: stri
     clearPendingApproval: () => { pendingApproval = null; },
     getPendingQuestionSet: () => pendingQuestionSet,
     clearPendingQuestionSet: () => { pendingQuestionSet = null; },
+    getTaskListState: () => null,
+    dispose: () => {},
   } as any;
 }
 
@@ -628,6 +630,48 @@ describe('cancelSession', () => {
       session.threadId
     );
     expect(ctx.ops.killSession).toHaveBeenCalledWith(session.threadId);
+  });
+});
+
+describe('pauseSession', () => {
+  it('persists as paused and kills WITHOUT unpersisting (resumable, unlike !stop)', async () => {
+    const mockPlatform = createMockPlatform();
+    const session = createMockSession({ platform: mockPlatform });
+    const sessions = new Map([['test-platform:thread-123', session]]);
+    const ctx = createMockSessionContext(sessions);
+
+    await commands.pauseSession(session, 'testuser', ctx);
+
+    // Resume hint posted, and its id registered so the 🔄 reaction resolves.
+    expect(mockPlatform.createPost).toHaveBeenCalledWith(
+      expect.stringContaining('Session paused'),
+      session.threadId
+    );
+    expect(session.lifecyclePostId).toBeTruthy();
+    expect(ctx.ops.registerPost).toHaveBeenCalledWith(session.lifecyclePostId, session.threadId);
+
+    // Persisted while paused, then the process killed — but NEVER unpersisted:
+    // that is the whole difference to cancelSession/!stop.
+    expect(ctx.ops.persistSession).toHaveBeenCalled();
+    expect(ctx.ops.unpersistSession).not.toHaveBeenCalled();
+    expect(session.claude.kill).toHaveBeenCalled();
+    expect(sessions.size).toBe(0); // removed from the live registry (slot freed)
+  });
+
+  it('still pauses when posting the resume hint fails', async () => {
+    const mockPlatform = createMockPlatform();
+    (mockPlatform.createPost as ReturnType<typeof mock>).mockImplementation(async () => {
+      throw new Error('platform down');
+    });
+    const session = createMockSession({ platform: mockPlatform });
+    const sessions = new Map([['test-platform:thread-123', session]]);
+    const ctx = createMockSessionContext(sessions);
+
+    await commands.pauseSession(session, 'testuser', ctx);
+
+    expect(ctx.ops.persistSession).toHaveBeenCalled();
+    expect(ctx.ops.unpersistSession).not.toHaveBeenCalled();
+    expect(session.claude.kill).toHaveBeenCalled();
   });
 });
 
