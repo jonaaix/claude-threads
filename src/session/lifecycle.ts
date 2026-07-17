@@ -88,6 +88,34 @@ function releasePendingStart(): void {
 }
 
 /**
+ * Session-cap decision: `maxSessions` bounds concurrent CONVERSATIONS
+ * (threads), not per-bot sessions. In a multi-bot channel several bots join
+ * the SAME thread (same threadId, different platformId) — counting each
+ * membership would let one conversation eat the whole budget and block the
+ * N-th bot mid-conversation (observed: a 5-bot intro round dying at bot 4
+ * with "Too busy"). So:
+ *
+ *  - a start that JOINS a thread which already has a live session is always
+ *    admitted (it doesn't add a conversation), and
+ *  - only starts that would open a NEW thread count against the cap, measured
+ *    in distinct threadIds (plus in-flight reservations).
+ *
+ * For single-bot setups this is exactly the old `sessions.size` check — one
+ * session per thread — so the mechanic is unchanged there.
+ */
+export function isAtSessionCap(
+  sessions: Iterable<Pick<Session, 'threadId'>>,
+  pendingStarts: number,
+  maxSessions: number,
+  threadId: string,
+): boolean {
+  const activeThreads = new Set<string>();
+  for (const s of sessions) activeThreads.add(s.threadId);
+  if (threadId && activeThreads.has(threadId)) return false; // joins an existing conversation
+  return activeThreads.size + pendingStarts >= maxSessions;
+}
+
+/**
  * Get postIndex map with correct mutable type.
  * Reduces type casting noise throughout the module.
  */
@@ -709,6 +737,18 @@ function firePeriodicReclassification(
 export const CHAT_PLATFORM_PROMPT = generateChatPlatformPrompt();
 
 /**
+ * The chat-platform prompt with the identity matching the platform's actual
+ * backend. The precomputed CHAT_PLATFORM_PROMPT claims "You are Claude Code",
+ * which is a lie for opencode-backed bots — non-Claude models then role-play
+ * being Claude when users ask what they are. Every spawn/respawn site must use
+ * this instead of the raw constant.
+ */
+export function chatPlatformPromptFor(ctx: SessionContext, platformId: string): string {
+  if (ctx.ops.getPlatformAgent(platformId) !== 'opencode') return CHAT_PLATFORM_PROMPT;
+  return generateChatPlatformPrompt({ backend: 'opencode', model: ctx.ops.getPlatformModel(platformId) });
+}
+
+/**
  * How often to fire periodic reclassification (every N messages).
  */
 const RECLASSIFICATION_INTERVAL = 5;
@@ -860,11 +900,11 @@ export async function startSession(
     return;
   }
 
-  // Check max sessions limit. Count pending starts alongside committed sessions
-  // — without this, concurrent startSession() calls all see the same stale size
-  // across the awaits below and over-admit above the configured cap.
-  const activeOrPending = ctx.state.sessions.size + pendingStartsCount;
-  if (activeOrPending >= ctx.config.maxSessions) {
+  // Check max sessions limit (thread-based; see isAtSessionCap). Pending starts
+  // are counted alongside committed sessions — without this, concurrent
+  // startSession() calls all see the same stale size across the awaits below
+  // and over-admit above the configured cap.
+  if (isAtSessionCap(ctx.state.sessions.values(), pendingStartsCount, ctx.config.maxSessions, threadId)) {
     const formatter = platform.getFormatter();
     // Create a temporary pseudo-session just for posting the message
     // (we don't have a real session yet since we're at capacity)
@@ -873,7 +913,7 @@ export async function startSession(
       threadId: replyToPostId || '',
       sessionId: 'temp',
     } as Session;
-    await post(tempSession, 'warning', `${formatter.formatBold('Too busy')} - ${activeOrPending} sessions active. Please try again later.`);
+    await post(tempSession, 'warning', `${formatter.formatBold('Too busy')} - ${ctx.state.sessions.size} sessions active. Please try again later.`);
     return;
   }
 
@@ -1032,7 +1072,7 @@ export async function startSession(
     actualThreadId,
     username,
     [username],
-    CHAT_PLATFORM_PROMPT,
+    chatPlatformPromptFor(ctx, platformId),
     ctx.state.githubEmailsStore,
     { peerBots: ctx.ops.getPeerBots(platformId) },
   );
@@ -1328,8 +1368,10 @@ export async function resumeSession(
     return;
   }
 
-  // Check max sessions limit
-  if (ctx.state.sessions.size >= ctx.config.maxSessions) {
+  // Check max sessions limit (thread-based, matching startSession: resuming a
+  // peer bot's membership in an already-active thread must not be blocked, or
+  // a restart resumes only SOME of a multi-bot conversation's participants).
+  if (isAtSessionCap(ctx.state.sessions.values(), 0, ctx.config.maxSessions, state.threadId)) {
     log.warn(`Max sessions reached, skipping resume for ${shortId}...`);
     return;
   }
@@ -1376,7 +1418,7 @@ export async function resumeSession(
     state.threadId,
     state.startedBy,
     state.sessionAllowedUsers || [state.startedBy],
-    CHAT_PLATFORM_PROMPT,
+    chatPlatformPromptFor(ctx, state.platformId),
     ctx.state.githubEmailsStore,
     { peerBots: ctx.ops.getPeerBots(state.platformId) },
   );

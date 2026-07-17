@@ -59,7 +59,7 @@ import { formatVersionString } from '../../utils/format.js';
 import { shortenPath } from '../index.js';
 import { getLogFilePath } from '../../persistence/thread-logger.js';
 import { quickQuery } from '../../claude/quick-query.js';
-import { CHAT_PLATFORM_PROMPT } from '../../session/lifecycle.js';
+import { chatPlatformPromptFor } from '../../session/lifecycle.js';
 import {
   buildAppendSystemPrompt,
   formatCollaboratorListForChat,
@@ -405,7 +405,7 @@ export async function changeDirectory(
     session.threadId,
     session.startedBy,
     session.sessionAllowedUsers,
-    CHAT_PLATFORM_PROMPT,
+    chatPlatformPromptFor(ctx, session.platformId),
     ctx.state.githubEmailsStore,
   );
 

@@ -38,6 +38,33 @@ describe('generateChatPlatformPrompt', () => {
     expect(prompt).toContain('Claude Code running as a bot');
   });
 
+  it('keeps the Claude identity for an explicit claude backend', () => {
+    const prompt = generateChatPlatformPrompt({ backend: 'claude' });
+
+    expect(prompt).toContain('You are Claude Code running as a bot');
+  });
+
+  it('states the configured model and forbids the Claude identity for opencode sessions', () => {
+    // Regression: the prompt used to claim "You are Claude Code" for every
+    // backend, so non-Claude models (DeepSeek/Kimi via opencode) introduced
+    // themselves as Claude when users asked which model they are.
+    const prompt = generateChatPlatformPrompt({
+      backend: 'opencode',
+      model: 'openrouter/deepseek/deepseek-v4-pro',
+    });
+
+    expect(prompt).not.toContain('You are Claude Code');
+    expect(prompt).toContain('`openrouter/deepseek/deepseek-v4-pro`');
+    expect(prompt).toContain('you are NOT Claude');
+  });
+
+  it('still forbids the Claude identity for opencode sessions without a configured model', () => {
+    const prompt = generateChatPlatformPrompt({ backend: 'opencode' });
+
+    expect(prompt).not.toContain('You are Claude Code');
+    expect(prompt).toContain('do not claim to be Claude');
+  });
+
   it('includes Permissions & Interactions section', () => {
     const prompt = generateChatPlatformPrompt();
 

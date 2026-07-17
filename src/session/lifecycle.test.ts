@@ -441,6 +441,36 @@ describe('Session State Management', () => {
 
 });
 
+describe('isAtSessionCap', () => {
+  const sessionsIn = (...threadIds: string[]): Array<{ threadId: string }> =>
+    threadIds.map((threadId) => ({ threadId }));
+
+  it('blocks a new thread when the cap is reached (single-bot equivalence)', () => {
+    // One session per thread — identical to the old sessions.size check.
+    expect(lifecycle.isAtSessionCap(sessionsIn('t1', 't2', 't3'), 0, 3, 'tNew')).toBe(true);
+    expect(lifecycle.isAtSessionCap(sessionsIn('t1', 't2'), 0, 3, 'tNew')).toBe(false);
+  });
+
+  it('counts pending starts toward the cap', () => {
+    expect(lifecycle.isAtSessionCap(sessionsIn('t1', 't2'), 1, 3, 'tNew')).toBe(true);
+  });
+
+  it('admits joining a thread that already has a live session, even at the cap', () => {
+    // Multi-bot: a peer bot entering an existing conversation must never be
+    // blocked mid-handoff (regression: 5-bot intro round dying with "Too busy").
+    expect(lifecycle.isAtSessionCap(sessionsIn('t1', 't2', 't3'), 0, 3, 't2')).toBe(false);
+  });
+
+  it('counts a multi-bot conversation as ONE toward the cap', () => {
+    // 5 bots in one thread = 5 sessions but 1 conversation → a new thread fits.
+    expect(lifecycle.isAtSessionCap(sessionsIn('t1', 't1', 't1', 't1', 't1'), 0, 5, 'tNew')).toBe(false);
+  });
+
+  it('never treats the no-thread fallback as a join', () => {
+    expect(lifecycle.isAtSessionCap(sessionsIn('t1', 't2', 't3'), 0, 3, '')).toBe(true);
+  });
+});
+
 describe('CHAT_PLATFORM_PROMPT', () => {
   it('contains version information', () => {
     expect(lifecycle.CHAT_PLATFORM_PROMPT).toContain('Claude Threads Version:');

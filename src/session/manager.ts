@@ -28,7 +28,7 @@ import * as streaming from '../operations/streaming/index.js';
 import * as events from '../operations/events/index.js';
 import * as commands from '../operations/commands/index.js';
 import * as lifecycle from './lifecycle.js';
-import { CHAT_PLATFORM_PROMPT } from './lifecycle.js';
+import { chatPlatformPromptFor } from './lifecycle.js';
 import type { PeerBotInfo } from '../commands/system-prompt-generator.js';
 import { handleMessage } from '../message-handler.js';
 import * as worktreeModule from '../operations/worktree/index.js';
@@ -1757,7 +1757,7 @@ export class SessionManager extends EventEmitter {
       generateWorkSummary: (s) => commands.generateWorkSummary(s),
       getThreadMessagesForContext: (s, limit, excludePostId) => contextPrompt.getThreadMessagesForContext(s, limit, excludePostId),
       formatContextForClaude: (messages, summary) => contextPrompt.formatContextForClaude(messages, summary),
-      appendSystemPrompt: CHAT_PLATFORM_PROMPT,
+      appendSystemPrompt: chatPlatformPromptFor(this.getContext(), session.platformId),
       githubEmailsStore: this.githubEmailsStore,
       registerPost: (postId, tid) => this.registerPost(postId, tid),
       updateStickyMessage: () => this.updateStickyMessage(),

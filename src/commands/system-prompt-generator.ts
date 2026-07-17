@@ -258,12 +258,40 @@ export async function buildAppendSystemPrompt(
 }
 
 /**
+ * Who the bot actually is, for the prompt's identity line. The default (no
+ * identity passed) is the Claude backend. For opencode-backed sessions the
+ * underlying model is whatever the platform config / opencode.json says — the
+ * prompt must NOT claim to be Claude, or non-Claude models dutifully role-play
+ * being "Claude" when users ask (observed: DeepSeek introducing itself as
+ * "Claude Opus 4.5" because this prompt told it so).
+ */
+export interface AgentIdentity {
+  backend: 'claude' | 'opencode';
+  /** Model spec as configured (e.g. `openrouter/deepseek/deepseek-v4-pro`); undefined = opencode's own default. */
+  model?: string;
+}
+
+/** The identity bullet(s) for the "How This Works" section. */
+function identityLines(identity?: AgentIdentity): string {
+  if (!identity || identity.backend === 'claude') {
+    return '- You are Claude Code running as a bot via "Claude Threads"';
+  }
+  const modelLine = identity.model
+    ? `- Your underlying AI model is \`${identity.model}\`. When asked who or which AI model you are, answer with that — you are NOT Claude. The framework name "Claude Threads" refers to this bot bridge, not to your model.`
+    : `- Your underlying AI model is whatever the opencode server is configured with — you are NOT necessarily Claude. The framework name "Claude Threads" refers to this bot bridge, not to your model; do not claim to be Claude unless you know that is your actual model.`;
+  return `- You are an AI agent running on the opencode runtime as a bot via "Claude Threads"\n${modelLine}`;
+}
+
+/**
  * Generate the chat platform system prompt from the command registry.
  *
  * This prompt is appended to Claude's system prompt via --append-system-prompt.
  * It provides context about running in a chat platform and available commands.
+ *
+ * @param identity - which backend/model the session actually runs on; omit for
+ *                   the Claude backend (historic default).
  */
-export function generateChatPlatformPrompt(): string {
+export function generateChatPlatformPrompt(identity?: AgentIdentity): string {
   // Get user commands (excluding passthrough)
   const userCommands = COMMAND_REGISTRY
     .filter(cmd =>
@@ -301,7 +329,7 @@ You are running inside a chat platform (like Mattermost or Slack). Users interac
 **Claude Threads Version:** ${VERSION}
 
 ## How This Works
-- You are Claude Code running as a bot via "Claude Threads"
+${identityLines(identity)}
 - Your responses appear as messages in a chat thread
 - Keep responses concise - very long responses are split across multiple messages
 - Multiple users may participate in a session (the owner can invite others)
