@@ -297,10 +297,14 @@ export function handleRateLimit(session: Session, hit: RateLimitHit, ctx: Sessio
  */
 function findPersistedByThreadId(
   persisted: Map<string, PersistedSession>,
-  threadId: string
+  threadId: string,
+  platformId?: string
 ): PersistedSession | undefined {
+  // Multi-bot channels persist one session PER BOT for the same threadId —
+  // scope by platformId whenever acting for one specific bot, or the lookup
+  // returns an arbitrary peer's session.
   for (const session of persisted.values()) {
-    if (session.threadId === threadId) {
+    if (session.threadId === threadId && (!platformId || session.platformId === platformId)) {
       return session;
     }
   }
@@ -1815,11 +1819,14 @@ export async function resumePausedSession(
   message: string,
   files: PlatformFile[] | undefined,
   ctx: SessionContext,
-  username: string
+  username: string,
+  platformId?: string
 ): Promise<void> {
-  // Find persisted session by raw threadId
+  // Find persisted session by raw threadId, scoped to the requesting bot's
+  // platform — in a shared channel every bot persists its own session for the
+  // same thread, and resuming a PEER's would answer as the wrong bot.
   const persisted = ctx.state.sessionStore.load();
-  const state = findPersistedByThreadId(persisted, threadId);
+  const state = findPersistedByThreadId(persisted, threadId, platformId);
   if (!state) {
     log.debug(`No persisted session found for ${threadId.substring(0, 8)}...`);
     return;
@@ -1847,8 +1854,12 @@ export async function resumePausedSession(
   // Resume the session
   await resumeSession(state, ctx);
 
-  // Wait a moment for the session to be ready, then send the message
-  const session = ctx.ops.findSessionByThreadId(threadId);
+  // Deliver the message to the session we JUST resumed — addressed by its
+  // composite id. The previous raw-threadId lookup could return a PEER bot's
+  // live session on the same thread (multi-bot channel), silently feeding this
+  // bot's message into the wrong bot: the peer answered, the resumed bot never
+  // saw its message.
+  const session = mutableSessions(ctx).get(`${state.platformId}:${state.threadId}`);
   if (session && session.claude.isRunning() && session.messageManager) {
     // Increment message counter and delegate to MessageManager
     session.messageCount++;

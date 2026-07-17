@@ -306,8 +306,8 @@ export async function handleMessage(
     // Same platform-scoping as the active branch: only consider a paused
     // session that belongs to THIS platform, so one bot can't resume (or get
     // looped into) another bot's thread in a shared channel.
-    const persistedForThread = session.registry.getPersistedByThreadId(threadRoot);
-    const hasPausedSession = persistedForThread !== undefined && persistedForThread.platformId === platformId;
+    const persistedForThread = session.registry.getPersistedByThreadId(threadRoot, platformId);
+    const hasPausedSession = persistedForThread !== undefined;
     if (hasPausedSession) {
       // If message starts with @mention to someone else, ignore it (side conversation)
       const mentionMatch = message.trim().match(/^@([\w.-]+)/);
@@ -324,11 +324,11 @@ export async function handleMessage(
       if (pausedParsed) {
         if (pausedParsed.command === 'stop') {
           // Clean up the paused session instead of resuming it
-          const persistedSession = session.getPersistedSession(threadRoot);
+          const persistedSession = session.getPersistedSession(threadRoot, platformId);
           if (persistedSession) {
             const allowedUsers = new Set(persistedSession.sessionAllowedUsers);
             if (allowedUsers.has(username) || client.isUserAllowed(username)) {
-              session.cancelPausedSession(threadRoot);
+              session.cancelPausedSession(threadRoot, platformId);
               await client.createPost(
                 `🛑 ${formatter.formatBold('Session cancelled')} by ${formatter.formatUserMention(username)}`,
                 threadRoot
@@ -341,7 +341,7 @@ export async function handleMessage(
       }
 
       // Check if user is allowed in the paused session
-      const persistedSession = session.getPersistedSession(threadRoot);
+      const persistedSession = session.getPersistedSession(threadRoot, platformId);
       if (persistedSession) {
         const allowedUsers = new Set(persistedSession.sessionAllowedUsers);
         if (!allowedUsers.has(username) && !client.isUserAllowed(username)) {
@@ -368,7 +368,7 @@ export async function handleMessage(
       const files = post.metadata?.files;
 
       if (content || files?.length) {
-        await session.resumePausedSession(threadRoot, content, files, username);
+        await session.resumePausedSession(threadRoot, content, files, username, platformId);
       }
       return;
     }

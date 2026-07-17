@@ -536,10 +536,14 @@ export class SessionStore {
    * @param threadId - Thread ID within any platform
    * @returns Session data if found (including soft-deleted), undefined otherwise
    */
-  findByThreadIdAnyState(threadId: string): PersistedSession | undefined {
+  findByThreadIdAnyState(threadId: string, platformId?: string): PersistedSession | undefined {
+    // In a multi-bot channel several bots persist sessions for the SAME
+    // threadId (one per platformId) — an unscoped lookup returns whichever
+    // happens to come first. Pass platformId whenever the caller acts on
+    // behalf of one specific bot.
     const data = this.loadRaw();
     for (const session of Object.values(data.sessions)) {
-      if (session.threadId === threadId) {
+      if (session.threadId === threadId && (!platformId || session.platformId === platformId)) {
         return session;
       }
     }

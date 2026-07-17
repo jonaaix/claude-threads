@@ -684,7 +684,7 @@ describe('handleMessage', () => {
 
       await handleMessage(client, session, post, user, options);
 
-      expect(session.resumePausedSession).toHaveBeenCalledWith('thread1', 'continue please', undefined, 'allowed-user');
+      expect(session.resumePausedSession).toHaveBeenCalledWith('thread1', 'continue please', undefined, 'allowed-user', 'test-platform');
     });
 
     test('rejects resume for unauthorized user', async () => {
@@ -720,7 +720,7 @@ describe('handleMessage', () => {
       await handleMessage(client, session, post, user, options);
 
       expect(session.resumePausedSession).not.toHaveBeenCalled();
-      expect(session.cancelPausedSession).toHaveBeenCalledWith('thread1');
+      expect(session.cancelPausedSession).toHaveBeenCalledWith('thread1', 'test-platform');
       // Should post a cancellation confirmation
       const postCalls = (client.createPost as any).mock.calls;
       const lastMessage = postCalls[postCalls.length - 1]?.[0];
@@ -742,7 +742,7 @@ describe('handleMessage', () => {
       await handleMessage(client, session, post, user, options);
 
       expect(session.resumePausedSession).not.toHaveBeenCalled();
-      expect(session.cancelPausedSession).toHaveBeenCalledWith('thread1');
+      expect(session.cancelPausedSession).toHaveBeenCalledWith('thread1', 'test-platform');
     });
 
     test('other commands in paused session do not resume', async () => {
@@ -806,7 +806,7 @@ describe('handleMessage', () => {
 
       await handleMessage(client, session, post, user, options);
 
-      expect(session.resumePausedSession).toHaveBeenCalledWith('thread1', 'please continue', undefined, 'allowed-user');
+      expect(session.resumePausedSession).toHaveBeenCalledWith('thread1', 'please continue', undefined, 'allowed-user', 'test-platform');
     });
 
     test('quiet mode off (default): a non-mention reply still resumes the paused session', async () => {
@@ -828,7 +828,7 @@ describe('handleMessage', () => {
 
       await handleMessage(client, session, post, user, options);
 
-      expect(session.resumePausedSession).toHaveBeenCalledWith('thread1', 'continue please', undefined, 'allowed-user');
+      expect(session.resumePausedSession).toHaveBeenCalledWith('thread1', 'continue please', undefined, 'allowed-user', 'test-platform');
     });
   });
 

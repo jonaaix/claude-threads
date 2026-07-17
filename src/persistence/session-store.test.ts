@@ -195,6 +195,22 @@ describe('SessionStore', () => {
       expect(found).toEqual(session);
     });
 
+    it('scopes by platformId — multi-bot threads persist one session per bot', () => {
+      // Regression: two bots share one thread; the unscoped lookup returned
+      // whichever came first, so bot B resumed/cancelled bot A's session and
+      // bot A's message got delivered into bot B's model.
+      const tarek = createTestSession({ platformId: 'mattermost', threadId: 'thread-xyz' });
+      const dave = createTestSession({ platformId: 'mattermost-2', threadId: 'thread-xyz' });
+      store.save('mattermost:thread-xyz', tarek);
+      store.save('mattermost-2:thread-xyz', dave);
+
+      expect(store.findByThreadIdAnyState('thread-xyz', 'mattermost')?.platformId).toBe('mattermost');
+      expect(store.findByThreadIdAnyState('thread-xyz', 'mattermost-2')?.platformId).toBe('mattermost-2');
+      expect(store.findByThreadIdAnyState('thread-xyz', 'slack-x')).toBeUndefined();
+      // Unscoped stays permissive (single-bot callers).
+      expect(store.findByThreadIdAnyState('thread-xyz')).toBeDefined();
+    });
+
     it('still finds a session after softDelete (unlike load())', () => {
       // Regression: the plain-reply resume path (message-handler.ts:198) must
       // see soft-deleted paused sessions so the user can continue them when
