@@ -15,14 +15,16 @@ import { satisfies, coerce } from 'semver';
 
 /**
  * Compatible opencode version range. The bundled `@opencode-ai/sdk` is on the
- * 1.17.x line; opencode's server API is generated from the same release, so we
+ * 1.18.x line; opencode's server API is generated from the same release, so we
  * require the host binary to be on the same major line. Bump this in lockstep
- * when upgrading the SDK dependency in package.json.
+ * when upgrading the SDK dependency in package.json. (Verified: bundled SDK
+ * 1.18.3 against host opencode 1.18.3, and cross-minor 1.17.x↔1.18.x, via the
+ * opt-in E2E in agent.e2e.test.ts.)
  */
 export const OPENCODE_VERSION_RANGE = '>=1.17.0 <2.0.0';
 
 /** The SDK version we ship against — surfaced in the "please update" message. */
-const BUNDLED_SDK_VERSION = '1.17.13';
+const BUNDLED_SDK_VERSION = '1.18.3';
 
 const COMMON_OPENCODE_PATHS: string[] = process.platform === 'win32'
   ? [

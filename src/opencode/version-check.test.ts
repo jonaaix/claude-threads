@@ -9,8 +9,9 @@ import { satisfies, coerce } from 'semver';
 import { OPENCODE_VERSION_RANGE, getOpencodePath } from './version-check.js';
 
 describe('OPENCODE_VERSION_RANGE', () => {
-  it('accepts the bundled SDK version line (1.17.x)', () => {
-    expect(satisfies(coerce('1.17.13')!.version, OPENCODE_VERSION_RANGE)).toBe(true);
+  it('accepts the bundled SDK version line (1.18.x) and cross-minor 1.17.x', () => {
+    expect(satisfies(coerce('1.18.3')!.version, OPENCODE_VERSION_RANGE)).toBe(true); // bundled
+    expect(satisfies(coerce('1.17.13')!.version, OPENCODE_VERSION_RANGE)).toBe(true); // cross-minor
     expect(satisfies(coerce('1.17.0')!.version, OPENCODE_VERSION_RANGE)).toBe(true);
   });
 
