@@ -577,7 +577,7 @@ describe('MessageManager', () => {
       expect(workingPosts).toHaveLength(1);
     });
 
-    it('pads the top of the working block so the header has breathing room', async () => {
+    it('frames the header with a rule above and below (visible separation)', async () => {
       await manager.handleEvent({
         type: 'assistant' as const,
         message: {
@@ -586,11 +586,14 @@ describe('MessageManager', () => {
       });
       await manager.flush();
 
-      // First line is a quoted zero-width space (a truly empty `> ` line would
-      // be collapsed by the markdown renderer), THEN the header.
+      // A blank/zero-width quote line collapses in Mattermost, so the header is
+      // framed by a visible en-dash rule above (separates from the author row)
+      // and below (separates from the first entry).
       const lines = manager.getWorkingPostContent().split('\n');
-      expect(lines[0]).toBe('> \u200B');
+      const rule = '> ' + '\u2013'.repeat(12);
+      expect(lines[0]).toBe(rule);
       expect(lines[1]).toContain('Working');
+      expect(lines[2]).toBe(rule);
     });
 
     it('hidden mode shows a live placeholder (no entries) and removes it at turn end', async () => {

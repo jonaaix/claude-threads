@@ -114,22 +114,22 @@ export class WorkingExecutor extends BaseExecutor<WorkingState> {
    */
   private renderExpanded(ctx: ExecutorContext): string {
     const header = ctx.formatter.formatBold('🛠️ Working');
-    // Breathing room ABOVE the header: the blockquote otherwise starts flush
-    // under the author row. A quoted zero-width space renders as a blank line
-    // inside the quote — a truly empty `> ` first line would be collapsed by
-    // the markdown renderer.
-    const topPad = '\u200B';
-    // A short, light underline so the header reads as a heading, set off from
-    // the first entry. En-dashes render thinner than a solid `─` rule, and a
-    // plain line is reliable inside a blockquote (a markdown `---` is ambiguous
-    // there). Kept roughly header-width so it looks balanced.
-    const underline = '–'.repeat(12);
+    // A short, light rule. En-dashes render thinner than a solid rule and,
+    // unlike a markdown `---`, are unambiguous inside a blockquote (a `---`
+    // there reads as a heading/hr). Kept roughly header-width.
+    const rule = '–'.repeat(12);
+    // Separate the header from the author row ABOVE it (the blockquote otherwise
+    // starts flush against the bot name) and from the first entry below, by
+    // framing it with a rule on each side. A blank quote line can't do this:
+    // Mattermost trims whitespace-only quote lines and a zero-width space counts
+    // as whitespace, so it collapses (tried; the header stayed flush). A visible
+    // rule is the reliable alternative and reads as a section title.
     const { maxLength } = ctx.platform.getMessageLimits();
     const marker = ctx.formatter.formatItalic('… (earlier steps omitted)');
-    // Budget for the raw body; leave a margin for the header + per-line "> "
-    // blockquote prefixes.
-    const budget = maxLength - header.length - underline.length - marker.length - 200;
-    const prefix: string[] = [topPad, header, underline];
+    // Budget for the raw body; leave a margin for the header + both rules +
+    // per-line "> " blockquote prefixes.
+    const budget = maxLength - header.length - rule.length * 2 - marker.length - 200;
+    const prefix: string[] = [rule, header, rule];
     let body = this.state.content;
     if (budget > 0 && body.length > budget) {
       body = body.slice(body.length - budget);
