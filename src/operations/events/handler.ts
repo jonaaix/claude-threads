@@ -9,7 +9,7 @@
  */
 
 import type { Session, SessionUsageStats, ModelTokenUsage } from '../../session/types.js';
-import { getSessionStatus, markClaudeResponded } from '../../session/types.js';
+import { getSessionStatus, markClaudeResponded, clearBootAck } from '../../session/types.js';
 import type { ClaudeEvent } from '../../claude/cli.js';
 import { shortenPath } from '../index.js';
 import { withErrorHandling } from '../../utils/error-handler/index.js';
@@ -170,6 +170,9 @@ export function handleEventPreProcessing(
   // On first meaningful response from Claude, mark session as safe to resume and persist
   if (!session.lifecycle.hasClaudeResponded && (event.type === 'assistant' || event.type === 'tool_use')) {
     markClaudeResponded(session);
+    // The bot is visibly responding now — take the ⏳ boot ack off the
+    // triggering message.
+    clearBootAck(session);
     ctx.ops.persistSession(session);
     ctx.ops.emitSessionUpdate(session.sessionId, { status: getSessionStatus(session) });
   }

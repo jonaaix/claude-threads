@@ -1,6 +1,51 @@
-import { describe, it, expect } from 'bun:test';
-import { getSessionStatus, createSessionLifecycle } from './types.js';
+import { describe, it, expect, mock } from 'bun:test';
+import { getSessionStatus, createSessionLifecycle, clearBootAck } from './types.js';
 import type { Session, SessionLifecycle } from './types.js';
+
+describe('clearBootAck', () => {
+  function sessionWithAck(bootAckPostId: string | null): { session: Session; removeReaction: ReturnType<typeof mock> } {
+    const removeReaction = mock(async (_postId: string, _emoji: string) => {});
+    const session = {
+      bootAckPostId,
+      platform: { removeReaction },
+    } as unknown as Session;
+    return { session, removeReaction };
+  }
+
+  it('removes the ⏳ reaction and clears the id', () => {
+    const { session, removeReaction } = sessionWithAck('post_1');
+
+    clearBootAck(session);
+
+    expect(session.bootAckPostId).toBeNull();
+    expect(removeReaction).toHaveBeenCalledWith('post_1', 'hourglass_flowing_sand');
+  });
+
+  it('is idempotent — a second call does not remove again', () => {
+    const { session, removeReaction } = sessionWithAck('post_1');
+
+    clearBootAck(session);
+    clearBootAck(session);
+
+    expect(removeReaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('no-ops when no boot ack was set', () => {
+    const { session, removeReaction } = sessionWithAck(null);
+
+    clearBootAck(session);
+
+    expect(removeReaction).not.toHaveBeenCalled();
+  });
+
+  it('swallows platform errors (reaction already gone)', () => {
+    const removeReaction = mock(async () => { throw new Error('not found'); });
+    const session = { bootAckPostId: 'post_1', platform: { removeReaction } } as unknown as Session;
+
+    expect(() => clearBootAck(session)).not.toThrow();
+    expect(session.bootAckPostId).toBeNull();
+  });
+});
 
 describe('getSessionStatus', () => {
   // Helper to create a minimal session for testing

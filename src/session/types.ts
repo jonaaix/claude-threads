@@ -13,6 +13,7 @@ import type { MessageManager } from '../operations/message-manager.js';
 import type { QuestionOption } from '../operations/types.js';
 import type { SessionTimers } from './timer-manager.js';
 import { checkTransition } from './lifecycle-fsm.js';
+import { BOOT_ACK_EMOJI } from '../utils/emoji.js';
 
 // Re-export timer types
 export type { SessionTimers };
@@ -239,6 +240,19 @@ export function markClaudeResponded(session: Session): void {
   }
 }
 
+/**
+ * Remove the ⏳ boot-acknowledgment reaction from the triggering message.
+ * Idempotent and fire-and-forget: the id is cleared synchronously so a second
+ * caller (first response vs. exit/cleanup racing) never double-removes, and a
+ * platform error (reaction already gone, post deleted) is ignored.
+ */
+export function clearBootAck(session: Session): void {
+  const postId = session.bootAckPostId;
+  if (!postId) return;
+  session.bootAckPostId = null;
+  void session.platform.removeReaction(postId, BOOT_ACK_EMOJI).catch(() => {});
+}
+
 // =============================================================================
 // Multi-bot baton ("Stab") coordination
 // =============================================================================
@@ -395,6 +409,11 @@ export interface Session {
 
   // Timeout warning state
   timeoutWarningPosted: boolean;
+
+  // Boot acknowledgment: the triggering post carrying the ⏳ reaction while the
+  // session boots and its first turn runs. Transient (not persisted); cleared
+  // via clearBootAck() on first response, start failure, or cleanup.
+  bootAckPostId?: string | null;
 
   // Worktree support
   worktreeInfo?: WorktreeInfo;              // Active worktree info

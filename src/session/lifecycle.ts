@@ -12,7 +12,9 @@ import {
   transitionTo,
   isSessionRestarting,
   isSessionCancelled,
+  clearBootAck,
 } from './types.js';
+import { BOOT_ACK_EMOJI } from '../utils/emoji.js';
 import type { OverheadVisibility, PermissionMode } from '../config/index.js';
 import { DEFAULT_OVERHEAD_VISIBILITY } from '../config/index.js';
 import { clearAllTimers } from './timer-manager.js';
@@ -178,6 +180,7 @@ async function cleanupSession(
     cleanupPostIndex: doCleanupPostIndex = true,
   } = options;
 
+  clearBootAck(session);
   ctx.ops.stopTyping(session);
   cleanupSessionTimers(session);
   if (doCloseLogger) {
@@ -220,6 +223,7 @@ function releaseAccountIfHeld(session: Session, ctx: SessionContext): void {
  * @param ctx - Session context for state access
  */
 function removeFromRegistry(session: Session, ctx: SessionContext): void {
+  clearBootAck(session);
   session.messageManager?.dispose();
   ctx.ops.emitSessionRemove(session.sessionId);
   mutableSessions(ctx).delete(session.sessionId);
@@ -878,6 +882,19 @@ export async function startSession(
   // path releases after the session is committed to the sessions map.
   pendingStartsCount++;
 
+  // Immediate visible feedback: react ⏳ on the triggering message so the user
+  // knows the bot heard them — boot plus the model's first turn can take tens
+  // of seconds before the first post appears (the typing indicator is easy to
+  // miss). Removed on the first response (events pre-processing), and on every
+  // failure path below so a dead start never leaves a stale ⏳.
+  const bootAckPostId = triggeringPostId || replyToPostId;
+  if (bootAckPostId) {
+    void platform.addReaction(bootAckPostId, BOOT_ACK_EMOJI).catch(() => {});
+  }
+  const removeBootAck = (): void => {
+    if (bootAckPostId) void platform.removeReaction(bootAckPostId, BOOT_ACK_EMOJI).catch(() => {});
+  };
+
   // Resolve per-platform header visibility once. See `resolveSessionHeaderMode`
   // for the rules — extracted so it's testable without spinning up a full
   // `startSession` (which would require mocking ClaudeCli, MessageManager, etc.).
@@ -909,6 +926,7 @@ export async function startSession(
       { action: 'Create session post' }
     );
     if (!startPost) {
+      removeBootAck();
       releasePendingStart();
       return;
     }
@@ -960,6 +978,7 @@ export async function startSession(
       } else {
         await platform.createPost(msg, replyToPostId);
       }
+      removeBootAck();
       releasePendingStart();
       return;
     }
@@ -972,6 +991,7 @@ export async function startSession(
       } else {
         await platform.createPost(msg, replyToPostId);
       }
+      removeBootAck();
       releasePendingStart();
       return;
     }
@@ -1103,6 +1123,7 @@ export async function startSession(
     permissionModeOverride: sessionPermissionModeOverride,
     sessionStartPostId: startPost ? startPost.id : null,
     sessionHeaderMode,
+    bootAckPostId: bootAckPostId ?? null,
     // NOTE: Task state (tasksPostId, lastTasksContent, etc.) is now managed by MessageManager.
     // These fields are intentionally NOT initialized here - MessageManager is the source of truth.
     timers: createSessionTimers(),
@@ -1161,6 +1182,7 @@ export async function startSession(
     claude.start();
   } catch (err) {
     await logAndNotify(err, { action: 'Start Claude', session });
+    clearBootAck(session);
     ctx.ops.stopTyping(session);
     session.messageManager?.dispose();
     ctx.ops.emitSessionRemove(session.sessionId);

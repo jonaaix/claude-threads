@@ -71,6 +71,8 @@ function createMockPlatform() {
     }),
     pinPost: mock(async (_postId: string): Promise<void> => {}),
     unpinPost: mock(async (_postId: string): Promise<void> => {}),
+    addReaction: mock(async (_postId: string, _emoji: string): Promise<void> => {}),
+    removeReaction: mock(async (_postId: string, _emoji: string): Promise<void> => {}),
     sendTyping: mock(() => {}),
     getFormatter: () => createMockFormatter(),
     getThreadHistory: mock(async (_threadId: string, _options?: { limit?: number }) => {
@@ -215,6 +217,24 @@ describe('handleEventPreProcessing', () => {
     handleEventPreProcessing(session, { type: 'tool_use', tool_use: { name: 'Read' } }, ctx);
 
     expect(session.lifecycle.hasClaudeResponded).toBe(true);
+  });
+
+  test('removes the ⏳ boot ack from the triggering post on first response', () => {
+    session.bootAckPostId = 'user_post_1';
+
+    handleEventPreProcessing(session, { type: 'assistant' }, ctx);
+
+    expect(session.bootAckPostId).toBeNull();
+    expect(platform.removeReaction).toHaveBeenCalledWith('user_post_1', 'hourglass_flowing_sand');
+  });
+
+  test('leaves the boot ack alone on non-response events', () => {
+    session.bootAckPostId = 'user_post_1';
+
+    handleEventPreProcessing(session, { type: 'system', subtype: 'init' } as any, ctx);
+
+    expect(session.bootAckPostId).toBe('user_post_1');
+    expect(platform.removeReaction).not.toHaveBeenCalled();
   });
 
   test('does not set hasClaudeResponded again if already set', () => {

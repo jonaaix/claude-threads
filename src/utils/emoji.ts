@@ -35,6 +35,12 @@ export const MINIMIZE_TOGGLE_EMOJIS = ['arrow_down_small', 'small_red_triangle_d
 export const BUG_REPORT_EMOJI = 'bug' as const;
 
 /**
+ * Boot acknowledgment (⏳): added to the triggering message while a fresh
+ * session boots and its first turn runs, removed on the first response.
+ */
+export const BOOT_ACK_EMOJI = 'hourglass_flowing_sand' as const;
+
+/**
  * Check if the emoji indicates approval (thumbs up)
  */
 export function isApprovalEmoji(emoji: string): boolean {
