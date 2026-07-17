@@ -17,7 +17,7 @@ import { ClaudeEvent } from '../claude/cli.js';
 import type { PlatformClient, PlatformUser, PlatformPost, PlatformFile } from '../platform/index.js';
 import { SessionStore, PersistedSession, PersistedContextPrompt } from '../persistence/session-store.js';
 import { GitHubEmailsStore } from '../persistence/github-emails-store.js';
-import { WorktreeMode, type LimitsConfig, type ResolvedLimits, type ClaudeAccount, type PermissionMode, type OverheadVisibility, type PlatformOverhead, type AgentBackendKind, type WorkingBlockMode, DEFAULT_OVERHEAD_VISIBILITY, DEFAULT_AGENT_BACKEND, DEFAULT_MAX_BOT_HANDOFFS, resolveLimits, effectivePermissionMode } from '../config/index.js';
+import { WorktreeMode, type LimitsConfig, type ResolvedLimits, type ClaudeAccount, type PermissionMode, type OverheadVisibility, type PlatformOverhead, type AgentBackendKind, type WorkingBlockMode, type WriteScopeMode, DEFAULT_OVERHEAD_VISIBILITY, DEFAULT_AGENT_BACKEND, DEFAULT_MAX_BOT_HANDOFFS, resolveLimits, effectivePermissionMode } from '../config/index.js';
 import { AccountPool } from '../claude/account-pool.js';
 import type { SessionInfo } from '../ui/types.js';
 import { CleanupScheduler } from '../cleanup/index.js';
@@ -147,6 +147,8 @@ export class SessionManager extends EventEmitter {
   // start here instead of the global workingDir. Undefined → global default.
   private platformWorkingDir: Map<string, string | undefined> = new Map();
   private platformWorkingBlock: Map<string, WorkingBlockMode | undefined> = new Map();
+  // Per-platform write scope (opencode backend). Undefined → unrestricted.
+  private platformWriteScope: Map<string, WriteScopeMode | undefined> = new Map();
 
   // Multi-bot baton ("Stab") coordination, keyed by raw threadId. The single
   // in-process source of truth for "which bot may answer in this thread". All N
@@ -234,7 +236,8 @@ export class SessionManager extends EventEmitter {
     model?: string,
     description?: string,
     workingDir?: string,
-    workingBlock?: WorkingBlockMode
+    workingBlock?: WorkingBlockMode,
+    writeScope?: WriteScopeMode
   ): void {
     this.platforms.set(platformId, client);
     this.platformOverhead.set(platformId, {
@@ -246,6 +249,7 @@ export class SessionManager extends EventEmitter {
     this.platformDescription.set(platformId, description);
     this.platformWorkingDir.set(platformId, workingDir);
     this.platformWorkingBlock.set(platformId, workingBlock);
+    this.platformWriteScope.set(platformId, writeScope);
     client.on('message', (post, user) => this.handleMessage(platformId, post, user));
     client.on('reaction', (reaction, user) => {
       if (user) {
@@ -587,6 +591,7 @@ export class SessionManager extends EventEmitter {
     this.platformDescription.delete(platformId);
     this.platformWorkingDir.delete(platformId);
     this.platformWorkingBlock.delete(platformId);
+    this.platformWriteScope.delete(platformId);
     stickyMessage.clearHiddenCleanupTracking(platformId);
   }
 
@@ -751,6 +756,8 @@ export class SessionManager extends EventEmitter {
       getPlatformWorkingDir: (pid) => this.platformWorkingDir.get(pid),
 
       getPlatformWorkingBlock: (pid) => this.platformWorkingBlock.get(pid),
+
+      getPlatformWriteScope: (pid) => this.platformWriteScope.get(pid),
 
       getPeerBotNames: (pid) => this.getPeerBotNames(pid),
 

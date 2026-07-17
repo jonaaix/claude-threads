@@ -33,6 +33,13 @@ export function isWorkingBlockMode(value: unknown): value is WorkingBlockMode {
   return value === 'expanded' || value === 'hidden';
 }
 
+/** Where a bot may write (opencode backend). See PlatformInstanceConfig.writeScope. */
+export type WriteScopeMode = 'unrestricted' | 'workingDir';
+
+export function isWriteScopeMode(value: unknown): value is WriteScopeMode {
+  return value === 'unrestricted' || value === 'workingDir';
+}
+
 export const OVERHEAD_VISIBILITY_VALUES: readonly OverheadVisibility[] = ['full', 'minimal', 'hidden'] as const;
 
 export const DEFAULT_OVERHEAD_VISIBILITY: OverheadVisibility = 'full';
@@ -326,6 +333,25 @@ export interface PlatformInstanceConfig {
    * is always posted separately either way.
    */
   workingBlock?: WorkingBlockMode;
+  /**
+   * Where this bot may WRITE (opencode backend only). Default `'unrestricted'`
+   * (today's behavior: every permission request is auto-approved).
+   *
+   * `'workingDir'` keeps an advisory bot in its lane: the bridge approves
+   * write/edit permission requests only for paths inside the bot's own
+   * `workingDir` (plus the OS temp dir) and REJECTS everything else — so a
+   * UX-sparring bot can still write its mockups in its own directory but can
+   * no longer edit the main project.
+   *
+   * PREREQUISITE: opencode only asks when its own config says so. Put an
+   * `opencode.json` in the bot's workingDir with
+   * `{ "permission": { "edit": "ask", "bash": "ask" } }` — without it no
+   * permission events fire and this option has no effect.
+   *
+   * This is a guardrail against an overeager model, not a security boundary
+   * (bash commands are checked heuristically for absolute paths / `..`).
+   */
+  writeScope?: WriteScopeMode;
   // Platform-specific fields (TypeScript allows extra properties)
   [key: string]: unknown;
 }

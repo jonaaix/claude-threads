@@ -23,6 +23,7 @@ export type {
   PlatformOverhead,
   AgentBackendKind,
   WorkingBlockMode,
+  WriteScopeMode,
 } from './types.js';
 export {
   LIMITS_DEFAULTS,
@@ -42,6 +43,7 @@ export {
   isAgentBackendKind,
   resolveAgentBackend,
   isWorkingBlockMode,
+  isWriteScopeMode,
 } from './types.js';
 
 import type { Config, WorktreeMode as WorktreeModeType, PermissionMode, OverheadVisibility } from './types.js';

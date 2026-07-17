@@ -27,6 +27,7 @@ import type { AgentBackend } from '../agent/backend.js';
 import { OpencodeEventTranslator } from './event-translator.js';
 import { opencodeServer } from './server.js';
 import type { OpencodeSessionStream } from './event-stream.js';
+import { evaluateWriteScope } from './write-scope.js';
 import { createLogger } from '../utils/logger.js';
 
 /** A concrete opencode model selection, as the SDK's prompt body expects it. */
@@ -74,6 +75,14 @@ export interface OpencodeAgentOptions {
    * config (`opencode.json`).
    */
   model?: OpencodeModel;
+  /**
+   * Directories this bot may WRITE in (`writeScope: 'workingDir'` → the
+   * session's workingDir + OS tmp). Undefined → unrestricted: every permission
+   * request is auto-approved (historic behavior). When set, write/bash
+   * permission requests are evaluated against these dirs and rejected outside
+   * them — see `write-scope.ts`.
+   */
+  writeScopeDirs?: string[];
 }
 
 export class OpencodeAgent extends EventEmitter implements AgentBackend {
@@ -156,13 +165,19 @@ export class OpencodeAgent extends EventEmitter implements AgentBackend {
   }
 
   private onOpencodeEvent(event: Event): void {
-    // First cut: auto-approve every permission request. opencode surfaces
-    // permissions as `permission.updated` events; without a reply the tool
-    // hangs. Wiring these to the thread's reaction-based approval UI (like the
-    // Claude MCP permission flow) is deferred — for now this mirrors Claude's
-    // "bypass" mode. Operators who want prompting configure it in opencode.
-    if (event.type === 'permission.updated') {
-      void this.autoApprovePermission(event.properties.id);
+    // Permission requests (opencode surfaces them as `permission.updated`;
+    // without a reply the tool hangs):
+    //  - unrestricted (no writeScopeDirs): auto-approve everything — mirrors
+    //    Claude's "bypass" mode. Operators who want prompting configure it in
+    //    opencode. Wiring these to the thread's reaction-based approval UI
+    //    (like the Claude MCP permission flow) is still deferred.
+    //  - scoped (writeScopeDirs set): approve only writes inside the scope,
+    //    reject everything else — keeps advisory bots out of peers' projects.
+    // opencode 1.18 emits `permission.updated`; 1.17 named it `permission.asked`
+    // (verified live) — handle both so a permission never hangs unanswered.
+    const type = (event as { type?: string }).type;
+    if (type === 'permission.updated' || type === 'permission.asked') {
+      void this.answerPermission((event as unknown as { properties: Record<string, unknown> }).properties);
       return;
     }
     for (const translated of this.translator.translate(event)) {
@@ -170,17 +185,39 @@ export class OpencodeAgent extends EventEmitter implements AgentBackend {
     }
   }
 
-  private async autoApprovePermission(permissionID: string): Promise<void> {
+  private async answerPermission(raw: Record<string, unknown>): Promise<void> {
     const client = opencodeServer.client;
     if (!client || !this.sessionId) return;
+    // Normalize across opencode versions: 1.18 has {type, pattern, title};
+    // 1.17 had {permission, patterns} and no title. The target path lives in
+    // metadata either way (verified: metadata.filepath).
+    const permission = {
+      id: String(raw.id ?? ''),
+      type: String(raw.type ?? raw.permission ?? ''),
+      title: typeof raw.title === 'string' ? raw.title : undefined,
+      pattern: (raw.pattern ?? raw.patterns) as string | string[] | undefined,
+      metadata: (raw.metadata ?? {}) as Record<string, unknown>,
+    };
+    if (!permission.id) return;
+    const scope = this.options.writeScopeDirs;
+    // Scoped allows use 'once' (each request re-evaluated), not 'always'
+    // (which would let opencode remember a blanket approval for the pattern).
+    const response = !scope
+      ? ('always' as const)
+      : evaluateWriteScope(permission, scope) === 'allow'
+        ? ('once' as const)
+        : ('reject' as const);
+    if (response === 'reject') {
+      this.log.info(`write-scope: rejected permission "${permission.title ?? permission.id}" (type=${permission.type})`);
+    }
     try {
       await client.postSessionIdPermissionsPermissionId({
-        path: { id: this.sessionId, permissionID },
+        path: { id: this.sessionId, permissionID: permission.id },
         query: { directory: this.options.workingDir },
-        body: { response: 'always' },
+        body: { response },
       });
     } catch (err) {
-      this.log.debug(`auto-approve permission ${permissionID} failed: ${err}`);
+      this.log.debug(`permission reply ${permission.id} failed: ${err}`);
     }
   }
 

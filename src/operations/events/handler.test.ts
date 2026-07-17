@@ -175,6 +175,7 @@ function createSessionContext(): SessionContext {
       getPlatformModel: mock(() => undefined),
       getPlatformWorkingDir: mock(() => undefined),
       getPlatformWorkingBlock: mock(() => undefined),
+      getPlatformWriteScope: mock(() => undefined),
       resolveMentionedBot: mock(() => undefined),
       resolveHandoffTarget: mock(() => undefined),
       dispatchBotHandoff: mock(() => Promise.resolve()),

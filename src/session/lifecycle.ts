@@ -34,6 +34,7 @@ import {
 } from '../commands/index.js';
 import { randomUUID } from 'crypto';
 import { existsSync } from 'fs';
+import { tmpdir } from 'os';
 import { keepAlive } from '../utils/keep-alive.js';
 import { logAndNotify, withErrorHandling } from '../utils/error-handler/index.js';
 import { createLogger } from '../utils/logger.js';
@@ -289,6 +290,17 @@ export function handleRateLimit(session: Session, hit: RateLimitHit, ctx: Sessio
     `⚠️ Claude account \`${session.claudeAccountId}\` hit a rate limit. ` +
       `New sessions will use another account until it resets (~${minutes}min).`
   );
+}
+
+/**
+ * The directories an opencode session may WRITE in, per the platform's
+ * `writeScope` config. Undefined → unrestricted (auto-approve, historic
+ * behavior). `'workingDir'` → the session's working directory plus the OS
+ * temp dir (scratch space; uploads already live there).
+ */
+function writeScopeDirsFor(ctx: SessionContext, platformId: string, workingDir: string): string[] | undefined {
+  if (ctx.ops.getPlatformWriteScope(platformId) !== 'workingDir') return undefined;
+  return [workingDir, tmpdir()];
 }
 
 /**
@@ -1137,6 +1149,7 @@ export async function startSession(
         // Per-platform `model` (opencode notation "provider/model"); undefined
         // → opencode uses its own default from opencode.json.
         model: parseOpencodeModel(ctx.ops.getPlatformModel(platformId)),
+        writeScopeDirs: writeScopeDirsFor(ctx, platformId, workingDir),
       })
     : new ClaudeCli(cliOptions);
 
@@ -1479,6 +1492,7 @@ export async function resumeSession(
         opencodeSessionId: state.opencodeSessionId,
         title: state.sessionTitle ?? 'claude-threads session',
         model: parseOpencodeModel(ctx.ops.getPlatformModel(state.platformId)),
+        writeScopeDirs: writeScopeDirsFor(ctx, state.platformId, state.workingDir),
       })
     : new ClaudeCli(cliOptions);
 

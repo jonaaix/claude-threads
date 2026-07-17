@@ -18,7 +18,7 @@ import type { SessionStore } from '../../persistence/session-store.js';
 import type { GitHubEmailsStore } from '../../persistence/github-emails-store.js';
 import type { SessionInfo } from '../../ui/types.js';
 import type { BuiltMessageContent } from '../streaming/handler.js';
-import type { ClaudeAccount, PermissionMode, PlatformOverhead, AgentBackendKind, WorkingBlockMode } from '../../config/index.js';
+import type { ClaudeAccount, PermissionMode, PlatformOverhead, AgentBackendKind, WorkingBlockMode, WriteScopeMode } from '../../config/index.js';
 import type { AccountPoolStatus } from '../../claude/account-pool.js';
 import type { PeerBotInfo } from '../../commands/system-prompt-generator.js';
 
@@ -317,6 +317,12 @@ export interface SessionOperations {
    * the default ('expanded').
    */
   getPlatformWorkingBlock(platformId: string): WorkingBlockMode | undefined;
+
+  /**
+   * Per-platform write scope (config `writeScope`, opencode backend).
+   * Undefined → unrestricted (auto-approve all permission requests).
+   */
+  getPlatformWriteScope(platformId: string): WriteScopeMode | undefined;
 
   /**
    * Bot names of other platforms sharing this platform's channel — the peers a

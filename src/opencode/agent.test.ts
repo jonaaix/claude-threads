@@ -31,6 +31,7 @@ interface Stub {
   stopped: string[];               // session ids whose stream.stop() ran
   promptCalls: unknown[];
   abortCalls: unknown[];
+  permissionReplies: Array<{ permissionID: string; response: string }>;
   client: unknown;
 }
 
@@ -43,6 +44,7 @@ beforeEach(() => {
     stopped: [],
     promptCalls: [],
     abortCalls: [],
+    permissionReplies: [],
     client: null,
   };
   stub.client = {
@@ -57,6 +59,10 @@ beforeEach(() => {
         return { data: true };
       }),
     },
+    postSessionIdPermissionsPermissionId: mock(async (opts: { path: { permissionID: string }; body: { response: string } }) => {
+      stub.permissionReplies.push({ permissionID: opts.path.permissionID, response: opts.body.response });
+      return { data: true };
+    }),
   };
 
   // Shadow the singleton's methods/getter (own props over prototype). The agent
@@ -166,6 +172,63 @@ describe('OpencodeAgent', () => {
     expect(stub.promptCalls[0]).toMatchObject({
       body: { model: { providerID: 'anthropic', modelID: 'claude-sonnet-4-5' } },
     });
+  });
+
+  it('auto-approves every permission request with "always" when unscoped', async () => {
+    const agent = new OpencodeAgent({ workingDir: '/repo' });
+    agent.start();
+    await ready(agent);
+
+    stub.registered?.({
+      type: 'permission.updated',
+      properties: { id: 'perm-1', type: 'edit', title: 'Edit /app/x.php', metadata: { filePath: '/app/x.php' }, sessionID: 'oc-1' },
+    } as unknown as Event);
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(stub.permissionReplies).toEqual([{ permissionID: 'perm-1', response: 'always' }]);
+  });
+
+  it('write scope: approves in-scope writes with "once" and rejects out-of-scope ones', async () => {
+    const agent = new OpencodeAgent({ workingDir: '/ai-agent-ux', writeScopeDirs: ['/ai-agent-ux', '/tmp'] });
+    agent.start();
+    await ready(agent);
+
+    stub.registered?.({
+      type: 'permission.updated',
+      properties: { id: 'perm-in', type: 'edit', title: 'Edit mockup', metadata: { filePath: '/ai-agent-ux/mockup.html' }, sessionID: 'oc-1' },
+    } as unknown as Event);
+    stub.registered?.({
+      type: 'permission.updated',
+      properties: { id: 'perm-out', type: 'edit', title: 'Edit OrderView', metadata: { filePath: '/app/OrderView.vue' }, sessionID: 'oc-1' },
+    } as unknown as Event);
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(stub.permissionReplies).toEqual([
+      { permissionID: 'perm-in', response: 'once' },
+      { permissionID: 'perm-out', response: 'reject' },
+    ]);
+  });
+
+  it('write scope: handles the opencode 1.17 permission.asked shape (permission/patterns/filepath)', async () => {
+    const agent = new OpencodeAgent({ workingDir: '/ai-agent-ux', writeScopeDirs: ['/ai-agent-ux', '/tmp'] });
+    agent.start();
+    await ready(agent);
+
+    // Verified live against opencode 1.17.13: no `type`/`title`, tool name in
+    // `permission`, path in metadata.filepath.
+    stub.registered?.({
+      type: 'permission.asked',
+      properties: {
+        id: 'perm-legacy',
+        permission: 'edit',
+        patterns: ['app/OrderView.vue'],
+        metadata: { filepath: '/app/OrderView.vue', diff: 'Index: /app/OrderView.vue' },
+        sessionID: 'oc-1',
+      },
+    } as unknown as Event);
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(stub.permissionReplies).toEqual([{ permissionID: 'perm-legacy', response: 'reject' }]);
   });
 
   it('aborts the session and emits exit once on kill', async () => {
