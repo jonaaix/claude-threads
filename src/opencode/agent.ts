@@ -146,7 +146,12 @@ export class OpencodeAgent extends EventEmitter implements AgentBackend {
 
     // Open THIS session's own event subscription and wait for it to be live
     // before init resolves — so the first prompt never races a dead stream.
-    this.stream = opencodeServer.openStream(this.sessionId, (event) => this.onOpencodeEvent(event), this.log);
+    this.stream = opencodeServer.openStream(
+      this.sessionId,
+      this.options.workingDir,
+      (event) => this.onOpencodeEvent(event),
+      this.log,
+    );
     await this.stream.start();
   }
 
@@ -181,33 +186,44 @@ export class OpencodeAgent extends EventEmitter implements AgentBackend {
 
   sendMessage(content: string): void {
     if (!this.ready) throw new Error('Not running');
-    void this.ready
-      .then(async () => {
-        const client = opencodeServer.client;
-        if (!client || !this.sessionId || !this.alive) return;
-        const { error } = await client.session.promptAsync({
-          path: { id: this.sessionId },
-          query: { directory: this.options.workingDir },
-          body: {
-            parts: [{ type: 'text', text: content }],
-            ...(this.options.appendSystemPrompt ? { system: this.options.appendSystemPrompt } : {}),
-            ...(this.options.model ? { model: this.options.model } : {}),
-          },
-        });
-        if (error) {
-          // Kicking off the turn failed outright (e.g. no model configured).
-          // Turn-time failures instead arrive as a session.error SSE event.
-          this.log.error(`promptAsync failed: ${JSON.stringify(error)}`);
-          this.emit('event', {
-            type: 'assistant',
-            message: { content: [{ type: 'text', text: `⚠️ opencode could not start the turn: ${JSON.stringify(error)}` }] },
-          });
-          this.emit('event', { type: 'result', subtype: 'error_during_execution', is_error: true, result: {} });
-        }
-      })
-      .catch(() => {
+    void this.ready.then(
+      () => this.prompt(content),
+      () => {
         // init() already surfaced the failure via 'error' + 'exit'.
+      },
+    );
+  }
+
+  private async prompt(content: string): Promise<void> {
+    const client = opencodeServer.client;
+    if (!client || !this.sessionId || !this.alive) return;
+    let failure: string | null = null;
+    try {
+      const { error } = await client.session.promptAsync({
+        path: { id: this.sessionId },
+        query: { directory: this.options.workingDir },
+        body: {
+          parts: [{ type: 'text', text: content }],
+          ...(this.options.appendSystemPrompt ? { system: this.options.appendSystemPrompt } : {}),
+          ...(this.options.model ? { model: this.options.model } : {}),
+        },
       });
+      // A returned error means kicking off the turn failed outright (e.g. no
+      // model configured). Turn-time failures arrive as session.error via SSE.
+      if (error) failure = JSON.stringify(error);
+    } catch (err) {
+      // Thrown (network-level / SDK) failure — MUST be surfaced too, or the
+      // turn dies silently and the thread just never answers.
+      failure = err instanceof Error ? err.message : String(err);
+    }
+    if (failure) {
+      this.log.error(`promptAsync failed: ${failure}`);
+      this.emit('event', {
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: `⚠️ opencode could not start the turn: ${failure}` }] },
+      });
+      this.emit('event', { type: 'result', subtype: 'error_during_execution', is_error: true, result: {} });
+    }
   }
 
   interrupt(): boolean {

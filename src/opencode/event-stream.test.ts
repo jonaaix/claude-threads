@@ -19,17 +19,24 @@ const ev = (n: number): Event => evFor('ses_1', n);
 // No-op logger — the stream only calls warn/info/error for diagnostics.
 const log = { warn() {}, info() {}, error() {}, debug() {} } as unknown as ConstructorParameters<
   typeof OpencodeSessionStream
->[3];
+>[4];
 
 // Build a fake client whose successive subscribes hand back queued streams.
-function fakeClientFrom(queued: AsyncIterable<Event>[]): { client: EventSubscribeClient; calls: () => number } {
+function fakeClientFrom(queued: AsyncIterable<Event>[]): {
+  client: EventSubscribeClient;
+  calls: () => number;
+  subscribeOptions: () => unknown[];
+} {
   let calls = 0;
+  const options: unknown[] = [];
   return {
     calls: () => calls,
+    subscribeOptions: () => options,
     client: {
       event: {
-        subscribe: async () => {
+        subscribe: async (opts?: { query?: { directory?: string } }) => {
           calls++;
+          options.push(opts);
           return { stream: queued.shift() ?? streamOf() };
         },
       },
@@ -87,7 +94,7 @@ describe('OpencodeSessionStream', () => {
     // Second subscribe hands back the next stream → proves the reconnect works.
     const { client, calls } = fakeClientFrom([streamOf(ev(2))]);
     const got: number[] = [];
-    const stream = new OpencodeSessionStream(client, 'ses_1', (e) => {
+    const stream = new OpencodeSessionStream(client, 'ses_1', '/work', (e) => {
       got.push(nOf(e));
       if (got.length >= 2) internals(stream).stopped = true; // exit after the reconnected event
     }, log);
@@ -103,7 +110,7 @@ describe('OpencodeSessionStream', () => {
     // First subscription is dead (ends immediately, no event); second is live.
     const { client, calls } = fakeClientFrom([streamOf(), streamOf(ev(7))]);
     const got: number[] = [];
-    const stream = new OpencodeSessionStream(client, 'ses_1', (e) => got.push(nOf(e)), log);
+    const stream = new OpencodeSessionStream(client, 'ses_1', '/work', (e) => got.push(nOf(e)), log);
 
     await internals(stream).subscribeLive(0);
 
@@ -111,10 +118,23 @@ describe('OpencodeSessionStream', () => {
     expect(calls()).toBe(2); // skipped the dead subscription, re-subscribed once
   });
 
+  it('subscribes with the session directory — /event is project-scoped', async () => {
+    // Regression: without `?directory=<workingDir>` the server scopes /event to
+    // the project of its own cwd, so a session in any other directory receives
+    // only server.connected/heartbeats — the stream looks live but every
+    // session event is missing and nothing ever reaches the chat thread.
+    const { client, subscribeOptions } = fakeClientFrom([streamOf(ev(1))]);
+    const stream = new OpencodeSessionStream(client, 'ses_1', '/work', () => {}, log);
+
+    await internals(stream).subscribeLive(1);
+
+    expect(subscribeOptions()).toEqual([{ query: { directory: '/work' } }]);
+  });
+
   it('ignores events belonging to other sessions', async () => {
     const { client } = fakeClientFrom([]);
     const got: string[] = [];
-    const stream = new OpencodeSessionStream(client, 'ses_1', (e) => {
+    const stream = new OpencodeSessionStream(client, 'ses_1', '/work', (e) => {
       got.push(sessionIdOf(e)!);
       internals(stream).stopped = true; // exit once our event arrives
     }, log);

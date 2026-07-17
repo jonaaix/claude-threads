@@ -7,8 +7,9 @@
  * `OpencodeClient`.
  *
  * What it does NOT share is the event subscription. opencode's `/event` stream
- * is global, but each `OpencodeAgent` opens its OWN `OpencodeSessionStream`
- * (filtered to its `sessionID`) so a dead/stalled stream self-heals per session
+ * is project-scoped (by `directory`), and each `OpencodeAgent` opens its OWN
+ * `OpencodeSessionStream` (subscribed with its working directory, filtered to
+ * its `sessionID`) so a dead/stalled stream self-heals per session
  * and never darkens other bots — the same failure isolation Claude gets from a
  * process per session. This module owns only the lazily-started server process
  * and the client; `openStream()` is the seam that hands agents their per-session
@@ -181,11 +182,12 @@ export class OpencodeServer {
    */
   openStream(
     sessionId: string,
+    directory: string,
     onEvent: (event: Event) => void,
     logger: ReturnType<typeof createLogger>,
   ): OpencodeSessionStream {
     if (!this.clientInstance) throw new Error('opencode server not started');
-    return new OpencodeSessionStream(this.clientInstance, sessionId, onEvent, logger);
+    return new OpencodeSessionStream(this.clientInstance, sessionId, directory, onEvent, logger);
   }
 
   /** Shut the server down (bot exit). Safe to call when never started. */

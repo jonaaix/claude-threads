@@ -26,6 +26,7 @@ interface Stub {
   createResult: { data?: { id: string }; error?: unknown };
   registered?: (e: Event) => void; // the onEvent handed to openStream
   registeredId?: string;           // the session id openStream was called with
+  registeredDir?: string;          // the working directory openStream was called with
   streamStarted: boolean;          // stream.start() awaited
   stopped: string[];               // session ids whose stream.stop() ran
   promptCalls: unknown[];
@@ -64,9 +65,10 @@ beforeEach(() => {
   // start()/stop() so the lifecycle can be asserted.
   (opencodeServer as unknown as { ensureStarted: () => Promise<unknown> }).ensureStarted = async () => stub.client;
   (opencodeServer as unknown as {
-    openStream: (id: string, fn: (e: Event) => void) => { start: () => Promise<void>; stop: () => void };
-  }).openStream = (id, fn) => {
+    openStream: (id: string, directory: string, fn: (e: Event) => void) => { start: () => Promise<void>; stop: () => void };
+  }).openStream = (id, directory, fn) => {
     stub.registeredId = id;
+    stub.registeredDir = directory;
     stub.registered = fn;
     return {
       start: async () => {
@@ -97,6 +99,7 @@ describe('OpencodeAgent', () => {
     await ready(agent);
 
     expect(stub.registeredId).toBe('oc-1');
+    expect(stub.registeredDir).toBe('/repo'); // /event is project-scoped — must subscribe with the session's directory
     expect(stub.streamStarted).toBe(true); // its own SSE stream was started
     expect(agent.getOpencodeSessionId()).toBe('oc-1');
     expect(agent.isRunning()).toBe(true);

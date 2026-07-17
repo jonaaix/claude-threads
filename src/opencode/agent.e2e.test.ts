@@ -18,6 +18,9 @@
  */
 
 import { describe, it, expect, afterAll } from 'bun:test';
+import { mkdtempSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { OpencodeAgent, parseOpencodeModel } from './agent.js';
 import { opencodeServer } from './server.js';
 import type { AgentEvent } from '../agent/backend.js';
@@ -26,7 +29,13 @@ const ENABLED = process.env.OPENCODE_E2E === '1';
 // Defaults to an opencode free-tier model so the test needs NO provider key —
 // override for a specific provider/model (e.g. "openrouter/z-ai/glm-5.2").
 const MODEL = process.env.OPENCODE_E2E_MODEL || 'opencode/deepseek-v4-flash-free';
-const WORKDIR = process.env.OPENCODE_E2E_DIR || process.cwd();
+// Deliberately NOT process.cwd(): opencode scopes its /event stream to a
+// project (directory), and the server's own cwd is the fallback project. A
+// session in a DIFFERENT directory is the case that broke in production
+// (subscription looked live, but no session events ever arrived) — so the E2E
+// default must exercise it. Override with OPENCODE_E2E_DIR to test a specific
+// project directory.
+const WORKDIR = process.env.OPENCODE_E2E_DIR || (ENABLED ? mkdtempSync(join(tmpdir(), 'opencode-e2e-')) : tmpdir());
 
 // Pull the first non-empty assistant text out of the translated event stream.
 function firstAssistantText(ev: AgentEvent): string | undefined {

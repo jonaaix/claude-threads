@@ -1,10 +1,15 @@
 /**
  * Per-session opencode SSE event stream.
  *
- * opencode's `/event` stream is GLOBAL — every subscriber sees every session's
- * events. Rather than one shared subscription demultiplexed to all sessions
- * (a single point of failure: one dead consume loop darkens every bot), each
- * `OpencodeAgent` owns ONE of these, filtered to its own `sessionID`. This
+ * opencode's `/event` stream is PROJECT-SCOPED: it must be subscribed with the
+ * session's `directory`, and it then carries every event of that project (all
+ * its sessions). Without the `directory` query the server falls back to the
+ * project of its own cwd — a subscriber for a session elsewhere receives only
+ * `server.connected`/heartbeats and looks deceptively alive while every session
+ * event is missing. Rather than one shared subscription demultiplexed to all
+ * sessions (a single point of failure: one dead consume loop darkens every
+ * bot), each `OpencodeAgent` owns ONE of these, subscribed with its own
+ * directory and filtered to its own `sessionID`. This
  * mirrors the Claude backend's one-process-per-session isolation: a stalled or
  * dropped stream self-heals for that session alone and never affects peers.
  *
@@ -49,7 +54,9 @@ export function sessionIdOf(event: Event): string | undefined {
  * unit tests supply a fake client without the whole SDK surface.
  */
 export interface EventSubscribeClient {
-  event: { subscribe: () => Promise<{ stream: AsyncIterable<Event> }> };
+  event: {
+    subscribe: (options?: { query?: { directory?: string } }) => Promise<{ stream: AsyncIterable<Event> }>;
+  };
 }
 
 /**
@@ -85,6 +92,13 @@ export class OpencodeSessionStream {
   constructor(
     private readonly client: EventSubscribeClient,
     private readonly sessionId: string,
+    /**
+     * The session's working directory. `/event` is PROJECT-SCOPED: without a
+     * `directory` query the server only streams events for the project of its
+     * own cwd — sessions in any other directory produce nothing (while
+     * `server.connected`/heartbeats still arrive, so the stream looks live).
+     */
+    private readonly directory: string,
     private readonly onEvent: (event: Event) => void,
     private readonly log: Logger,
   ) {}
@@ -140,7 +154,7 @@ export class OpencodeSessionStream {
       if (i > 0) await delay(RECONNECT_DELAY_MS);
       let iterator: AsyncIterator<Event>;
       try {
-        const events = await this.client.event.subscribe();
+        const events = await this.client.event.subscribe({ query: { directory: this.directory } });
         iterator = events.stream[Symbol.asyncIterator]();
       } catch (err) {
         this.log.warn(`opencode subscribe failed: ${err instanceof Error ? err.message : String(err)}`);
