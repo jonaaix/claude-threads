@@ -1,17 +1,18 @@
 /**
- * Shared opencode server hub.
+ * Shared opencode server process.
  *
  * Unlike the Claude Code CLI — one child process per session — opencode uses a
- * client/server model where a single `opencode serve` process can host many
- * sessions concurrently. So the whole bot shares ONE server and ONE SSE event
- * subscription; events carry a `sessionID` which we use to fan out to the
- * per-session `OpencodeAgent` that registered for it.
+ * client/server model where a single `opencode serve` process hosts many
+ * sessions concurrently. So the whole bot shares ONE server process and ONE
+ * `OpencodeClient`.
  *
- * This hub owns:
- *  - the lazily-started server process (via the SDK's `createOpencodeServer`,
- *    which spawns the `opencode` binary — it must be on PATH),
- *  - the single `OpencodeClient` every agent talks to,
- *  - the single global event stream and its sessionID → listener dispatch.
+ * What it does NOT share is the event subscription. opencode's `/event` stream
+ * is global, but each `OpencodeAgent` opens its OWN `OpencodeSessionStream`
+ * (filtered to its `sessionID`) so a dead/stalled stream self-heals per session
+ * and never darkens other bots — the same failure isolation Claude gets from a
+ * process per session. This module owns only the lazily-started server process
+ * and the client; `openStream()` is the seam that hands agents their per-session
+ * subscription.
  *
  * Start is idempotent and concurrency-safe (a single in-flight init promise).
  */
@@ -22,16 +23,11 @@ import { execSync } from 'child_process';
 import { dirname, delimiter } from 'path';
 import { createLogger } from '../utils/logger.js';
 import { getOpencodePath } from './version-check.js';
+import { OpencodeSessionStream } from './event-stream.js';
 
 const log = createLogger('opencode');
 
 const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
-
-// Event-subscription resilience (see subscribeLive / runEventLoop).
-const INITIAL_SUBSCRIBE_ATTEMPTS = 5; // bounded at startup so init can fail-fast
-const LIVENESS_MS = 4000;             // a healthy subscription emits server.connected at once
-const STALL_MS = 45_000;              // no events this long on a live stream → reconnect
-const RECONNECT_DELAY_MS = 1000;
 
 /**
  * Free a port held by a LEFTOVER opencode server so we can start a fresh one
@@ -84,28 +80,10 @@ function alignOpencodeOnPath(): void {
   log.debug(`Prepended ${dir} to PATH so the opencode server spawns from ${bin}`);
 }
 
-/** Extract the owning session id from any opencode event, or undefined. */
-export function sessionIdOf(event: Event): string | undefined {
-  const props = (event as { properties?: Record<string, unknown> }).properties;
-  if (!props) return undefined;
-  const p = props as {
-    sessionID?: string;
-    part?: { sessionID?: string };
-    info?: { sessionID?: string; id?: string };
-  };
-  // message.part.updated → part.sessionID; message.updated → info.sessionID;
-  // everything else we translate (todo.updated, session.idle/error) → sessionID.
-  return p.sessionID ?? p.part?.sessionID ?? p.info?.sessionID;
-}
-
-type Listener = (event: Event) => void;
-
-export class OpencodeServerHub {
+export class OpencodeServer {
   private server: { url: string; close(): void } | null = null;
   private clientInstance: OpencodeClient | null = null;
   private initPromise: Promise<OpencodeClient> | null = null;
-  private readonly listeners = new Map<string, Listener>();
-  private stopped = false;
 
   /** The shared client, or null before the first successful `ensureStarted()`. */
   get client(): OpencodeClient | null {
@@ -113,9 +91,9 @@ export class OpencodeServerHub {
   }
 
   /**
-   * Start the server + client and the global event loop once. Concurrent
-   * callers share the same in-flight init. Throws if the `opencode` binary
-   * can't be started (missing / incompatible).
+   * Start the server + client once. Concurrent callers share the same in-flight
+   * init. Throws if the `opencode` binary can't be started (missing /
+   * incompatible).
    */
   ensureStarted(): Promise<OpencodeClient> {
     if (this.clientInstance) return Promise.resolve(this.clientInstance);
@@ -131,7 +109,6 @@ export class OpencodeServerHub {
   }
 
   private async init(): Promise<OpencodeClient> {
-    this.stopped = false;
     alignOpencodeOnPath();
     // opencode listens on 4096 by default. If that collides with a developer's
     // own `opencode serve`, set OPENCODE_PORT to a free port.
@@ -165,7 +142,8 @@ export class OpencodeServerHub {
       } catch (retryErr) {
         // Last resort: connect to whatever is on the port (may be the user's own
         // `opencode serve`, or a server we couldn't kill). It might run a stale
-        // config, but a working bot beats a dead one. subscribe() below validates it.
+        // config, but a working bot beats a dead one. Each agent's stream
+        // subscription below validates reachability and surfaces a dead server.
         this.server = null; // not ours → shutdown() must not close it
         url = `http://${hostname}:${port}`;
         log.warn(
@@ -175,144 +153,26 @@ export class OpencodeServerHub {
       }
     }
     const client = createOpencodeClient({ baseUrl: url });
-
-    // Establish the global subscription BEFORE returning, so no early events
-    // are missed once agents start creating sessions. Also doubles as the
-    // reachability check for a reused server: if it throws, init rejects and
-    // `clientInstance` stays null (so the getter never hands out a dead client).
-    // Establish a VERIFIED-LIVE subscription before returning, so the caller
-    // (and the first prompt it sends) never races a dead stream. The initial
-    // attempt is bounded — if we can't get a live stream, init rejects and
-    // clientInstance stays null (the getter never hands out a dead client).
-    const stream = await this.subscribeLive(client, INITIAL_SUBSCRIBE_ATTEMPTS);
     this.clientInstance = client;
-    void this.runEventLoop(client, stream);
-
     return client;
   }
 
   /**
-   * Consume the event stream, self-healing forever. The subscription can
-   * silently stall or die (observed: one established the instant the embedded
-   * server comes up can hand back a dead stream) — without recovery the hub
-   * delivers nothing until a full bot restart, so opencode responses are
-   * generated but never posted. On any end, error, or STALL (no events for
-   * STALL_MS) we re-establish a live subscription and keep going.
+   * Open a per-session event subscription. The agent owns the returned stream's
+   * lifetime: it must `start()` it (awaitable — resolves once live) and `stop()`
+   * it on teardown. Throws if the server hasn't been started yet.
    */
-  private async runEventLoop(client: OpencodeClient, initialStream: AsyncIterable<Event>): Promise<void> {
-    let stream: AsyncIterable<Event> | null = initialStream;
-    while (!this.stopped && stream) {
-      try {
-        await this.consumeWithWatchdog(stream);
-        if (this.stopped) return;
-        log.warn('opencode event stream ended; reconnecting');
-      } catch (err) {
-        if (this.stopped) return;
-        log.warn(`opencode event stream lost (${err instanceof Error ? err.message : String(err)}); reconnecting`);
-      }
-      // Retry forever (attempts <= 0) on reconnect; null only when stopped.
-      stream = await this.subscribeLive(client, 0).catch(() => null);
-    }
-  }
-
-  /**
-   * Subscribe and VERIFY the stream is live: opencode emits an event
-   * (`server.connected`) immediately, so a healthy stream yields within
-   * LIVENESS_MS. A stream that produces nothing in that window is the dead
-   * subscription we must avoid — discard it and re-subscribe. The verified
-   * first event is dispatched here, then the live iterator is returned for the
-   * ongoing consume loop. `attempts <= 0` retries until `stopped`.
-   */
-  private async subscribeLive(client: OpencodeClient, attempts: number): Promise<AsyncIterable<Event>> {
-    for (let i = 0; !this.stopped && (attempts <= 0 || i < attempts); i++) {
-      if (i > 0) await delay(RECONNECT_DELAY_MS);
-      let iterator: AsyncIterator<Event>;
-      try {
-        const events = await client.event.subscribe();
-        iterator = events.stream[Symbol.asyncIterator]();
-      } catch (err) {
-        log.warn(`opencode subscribe failed: ${err instanceof Error ? err.message : String(err)}`);
-        continue;
-      }
-      const first = await this.nextWithin(iterator, LIVENESS_MS);
-      if (first === 'timeout' || first.done) {
-        log.warn('opencode subscription produced no initial event; re-subscribing');
-        try { await iterator.return?.(); } catch { /* best-effort */ }
-        continue;
-      }
-      if (i > 0) log.info('opencode event stream reconnected');
-      this.dispatch(first.value);
-      return { [Symbol.asyncIterator]: () => iterator };
-    }
-    throw new Error('could not establish a live opencode event subscription');
-  }
-
-  /** `iterator.next()` racing a timeout; resolves to `'timeout'` if it stalls. */
-  private async nextWithin(
-    iterator: AsyncIterator<Event>,
-    ms: number,
-  ): Promise<IteratorResult<Event> | 'timeout'> {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const timeout = new Promise<'timeout'>((resolve) => {
-      timer = setTimeout(() => resolve('timeout'), ms);
-    });
-    try {
-      return await Promise.race([iterator.next(), timeout]);
-    } finally {
-      if (timer) clearTimeout(timer);
-    }
-  }
-
-  /**
-   * Iterate the stream, dispatching events, with a stall watchdog: if no event
-   * arrives within STALL_MS, throw so the caller reconnects. Always closes the
-   * iterator on exit so the dead SSE connection is released.
-   */
-  private async consumeWithWatchdog(stream: AsyncIterable<Event>): Promise<void> {
-    const iterator = stream[Symbol.asyncIterator]();
-    try {
-      while (!this.stopped) {
-        const result = await this.nextWithin(iterator, STALL_MS);
-        if (result === 'timeout') throw new Error(`no events for ${STALL_MS}ms`);
-        if (result.done) return; // stream ended cleanly
-        this.dispatch(result.value);
-      }
-    } finally {
-      try {
-        await iterator.return?.();
-      } catch {
-        // ignore — best-effort close of a possibly-dead stream
-      }
-    }
-  }
-
-  /** Route one event to its session's listener (no-op for sessionless events). */
-  private dispatch(event: Event): void {
-    const sessionId = sessionIdOf(event);
-    if (!sessionId) return;
-    const listener = this.listeners.get(sessionId);
-    if (!listener) return;
-    try {
-      listener(event);
-    } catch (err) {
-      log.error(`Listener for session ${sessionId} threw: ${err}`);
-    }
-  }
-
-  /** Route this opencode session's events to `listener`. */
-  register(sessionId: string, listener: Listener): void {
-    this.listeners.set(sessionId, listener);
-  }
-
-  /** Stop routing events for a session (on kill/teardown). */
-  unregister(sessionId: string): void {
-    this.listeners.delete(sessionId);
+  openStream(
+    sessionId: string,
+    onEvent: (event: Event) => void,
+    logger: ReturnType<typeof createLogger>,
+  ): OpencodeSessionStream {
+    if (!this.clientInstance) throw new Error('opencode server not started');
+    return new OpencodeSessionStream(this.clientInstance, sessionId, onEvent, logger);
   }
 
   /** Shut the server down (bot exit). Safe to call when never started. */
   async shutdown(): Promise<void> {
-    this.stopped = true;
-    this.listeners.clear();
     try {
       this.server?.close();
     } catch (err) {
@@ -324,5 +184,5 @@ export class OpencodeServerHub {
   }
 }
 
-/** Process-wide singleton — every session shares this one server + subscription. */
-export const opencodeHub = new OpencodeServerHub();
+/** Process-wide singleton — every session shares this one server process. */
+export const opencodeServer = new OpencodeServer();

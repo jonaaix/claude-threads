@@ -11,7 +11,7 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import type { Event } from '@opencode-ai/sdk';
 import { OpencodeAgent, parseOpencodeModel } from './agent.js';
-import { opencodeHub } from './server.js';
+import { opencodeServer } from './server.js';
 
 // A completed opencode text part → should translate to one assistant event.
 const completedText = (text: string): Event =>
@@ -24,9 +24,10 @@ const completedText = (text: string): Event =>
 
 interface Stub {
   createResult: { data?: { id: string }; error?: unknown };
-  registered?: (e: Event) => void;
-  registeredId?: string;
-  unregistered: string[];
+  registered?: (e: Event) => void; // the onEvent handed to openStream
+  registeredId?: string;           // the session id openStream was called with
+  streamStarted: boolean;          // stream.start() awaited
+  stopped: string[];               // session ids whose stream.stop() ran
   promptCalls: unknown[];
   abortCalls: unknown[];
   client: unknown;
@@ -37,7 +38,8 @@ let stub: Stub;
 beforeEach(() => {
   stub = {
     createResult: { data: { id: 'oc-1' } },
-    unregistered: [],
+    streamStarted: false,
+    stopped: [],
     promptCalls: [],
     abortCalls: [],
     client: null,
@@ -56,24 +58,33 @@ beforeEach(() => {
     },
   };
 
-  // Shadow the singleton's methods/getter (own props over prototype).
-  (opencodeHub as unknown as { ensureStarted: () => Promise<unknown> }).ensureStarted = async () => stub.client;
-  (opencodeHub as unknown as { register: (id: string, fn: (e: Event) => void) => void }).register = (id, fn) => {
+  // Shadow the singleton's methods/getter (own props over prototype). The agent
+  // no longer registers with a shared hub — it opens its OWN per-session stream;
+  // the fake stream captures the onEvent so tests can drive events, and records
+  // start()/stop() so the lifecycle can be asserted.
+  (opencodeServer as unknown as { ensureStarted: () => Promise<unknown> }).ensureStarted = async () => stub.client;
+  (opencodeServer as unknown as {
+    openStream: (id: string, fn: (e: Event) => void) => { start: () => Promise<void>; stop: () => void };
+  }).openStream = (id, fn) => {
     stub.registeredId = id;
     stub.registered = fn;
+    return {
+      start: async () => {
+        stub.streamStarted = true;
+      },
+      stop: () => {
+        stub.stopped.push(id);
+      },
+    };
   };
-  (opencodeHub as unknown as { unregister: (id: string) => void }).unregister = (id) => {
-    stub.unregistered.push(id);
-  };
-  Object.defineProperty(opencodeHub, 'client', { configurable: true, get: () => stub.client });
+  Object.defineProperty(opencodeServer, 'client', { configurable: true, get: () => stub.client });
 });
 
 afterEach(() => {
   // Remove own-prop shadows so the real prototype methods/getter come back.
-  delete (opencodeHub as unknown as Record<string, unknown>).ensureStarted;
-  delete (opencodeHub as unknown as Record<string, unknown>).register;
-  delete (opencodeHub as unknown as Record<string, unknown>).unregister;
-  delete (opencodeHub as unknown as Record<string, unknown>).client;
+  delete (opencodeServer as unknown as Record<string, unknown>).ensureStarted;
+  delete (opencodeServer as unknown as Record<string, unknown>).openStream;
+  delete (opencodeServer as unknown as Record<string, unknown>).client;
 });
 
 /** Access the private readiness promise so tests can await init. */
@@ -86,6 +97,7 @@ describe('OpencodeAgent', () => {
     await ready(agent);
 
     expect(stub.registeredId).toBe('oc-1');
+    expect(stub.streamStarted).toBe(true); // its own SSE stream was started
     expect(agent.getOpencodeSessionId()).toBe('oc-1');
     expect(agent.isRunning()).toBe(true);
   });
@@ -163,7 +175,7 @@ describe('OpencodeAgent', () => {
     await agent.kill();
     await agent.kill(); // idempotent
 
-    expect(stub.unregistered).toEqual(['oc-1']);
+    expect(stub.stopped).toEqual(['oc-1']); // its own stream was stopped, once
     expect(stub.abortCalls).toHaveLength(1);
     expect(exits).toBe(1);
     expect(agent.isRunning()).toBe(false);

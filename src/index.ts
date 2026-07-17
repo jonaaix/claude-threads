@@ -20,7 +20,7 @@ import type { CliArgs } from './config/index.js';
 import { runOnboarding } from './onboarding.js';
 import { MattermostClient, SlackClient, type PlatformClient, type PlatformPost, type PlatformUser } from './platform/index.js';
 import { SessionManager } from './session/index.js';
-import { opencodeHub } from './opencode/server.js';
+import { opencodeServer } from './opencode/server.js';
 import { SessionStore } from './persistence/session-store.js';
 import { checkForUpdates } from './update-notifier.js';
 import { VERSION } from './version.js';
@@ -846,7 +846,7 @@ async function startWithoutDaemon() {
 
     // Shut down the shared opencode server (if one was started for any
     // opencode-backed session). No-op when no opencode session ever ran.
-    await opencodeHub.shutdown();
+    await opencodeServer.shutdown();
 
     // Stop auto-update manager
     autoUpdateManager?.stop();

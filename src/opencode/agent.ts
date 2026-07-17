@@ -6,8 +6,8 @@
  * differences from Claude are hidden here:
  *
  *  - There is no per-session child process. `start()` ensures the shared
- *    `opencodeHub` server is up and creates (or resumes) an opencode session,
- *    then registers for that session's slice of the global SSE stream.
+ *    shared `opencodeServer` is up and creates (or resumes) an opencode
+ *    session, then opens its OWN SSE subscription filtered to that session.
  *  - Incoming opencode events are translated into Claude-shaped events by a
  *    per-session `OpencodeEventTranslator` and re-emitted as `'event'`, so the
  *    downstream pipeline is unchanged.
@@ -25,7 +25,8 @@ import { EventEmitter } from 'events';
 import type { Event } from '@opencode-ai/sdk';
 import type { AgentBackend } from '../agent/backend.js';
 import { OpencodeEventTranslator } from './event-translator.js';
-import { opencodeHub } from './server.js';
+import { opencodeServer } from './server.js';
+import type { OpencodeSessionStream } from './event-stream.js';
 import { createLogger } from '../utils/logger.js';
 
 /** A concrete opencode model selection, as the SDK's prompt body expects it. */
@@ -80,6 +81,8 @@ export class OpencodeAgent extends EventEmitter implements AgentBackend {
   private readonly log: ReturnType<typeof createLogger>;
   /** opencode session id (created or resumed); set once `init()` resolves. */
   private sessionId: string | undefined;
+  /** This session's own SSE subscription (isolated, self-healing). */
+  private stream: OpencodeSessionStream | null = null;
   /** Resolves when the session exists and we're subscribed; rejects on failure. */
   private ready: Promise<void> | null = null;
   private alive = false;
@@ -124,7 +127,7 @@ export class OpencodeAgent extends EventEmitter implements AgentBackend {
   }
 
   private async init(): Promise<void> {
-    const client = await opencodeHub.ensureStarted();
+    const client = await opencodeServer.ensureStarted();
 
     if (this.options.opencodeSessionId) {
       this.sessionId = this.options.opencodeSessionId;
@@ -141,7 +144,10 @@ export class OpencodeAgent extends EventEmitter implements AgentBackend {
       this.log.debug(`Created opencode session ${this.sessionId}`);
     }
 
-    opencodeHub.register(this.sessionId, (event) => this.onOpencodeEvent(event));
+    // Open THIS session's own event subscription and wait for it to be live
+    // before init resolves — so the first prompt never races a dead stream.
+    this.stream = opencodeServer.openStream(this.sessionId, (event) => this.onOpencodeEvent(event), this.log);
+    await this.stream.start();
   }
 
   private onOpencodeEvent(event: Event): void {
@@ -160,7 +166,7 @@ export class OpencodeAgent extends EventEmitter implements AgentBackend {
   }
 
   private async autoApprovePermission(permissionID: string): Promise<void> {
-    const client = opencodeHub.client;
+    const client = opencodeServer.client;
     if (!client || !this.sessionId) return;
     try {
       await client.postSessionIdPermissionsPermissionId({
@@ -177,7 +183,7 @@ export class OpencodeAgent extends EventEmitter implements AgentBackend {
     if (!this.ready) throw new Error('Not running');
     void this.ready
       .then(async () => {
-        const client = opencodeHub.client;
+        const client = opencodeServer.client;
         if (!client || !this.sessionId || !this.alive) return;
         const { error } = await client.session.promptAsync({
           path: { id: this.sessionId },
@@ -206,7 +212,7 @@ export class OpencodeAgent extends EventEmitter implements AgentBackend {
 
   interrupt(): boolean {
     if (!this.alive || !this.sessionId) return false;
-    const client = opencodeHub.client;
+    const client = opencodeServer.client;
     if (!client) return false;
     this.log.debug(`Aborting opencode session ${this.sessionId} (interrupt)`);
     void client.session.abort({ path: { id: this.sessionId }, query: { directory: this.options.workingDir } }).catch(() => {});
@@ -216,9 +222,10 @@ export class OpencodeAgent extends EventEmitter implements AgentBackend {
   async kill(): Promise<void> {
     if (!this.alive) return;
     this.alive = false;
+    this.stream?.stop();
+    this.stream = null;
     if (this.sessionId) {
-      opencodeHub.unregister(this.sessionId);
-      const client = opencodeHub.client;
+      const client = opencodeServer.client;
       try {
         await client?.session.abort({ path: { id: this.sessionId }, query: { directory: this.options.workingDir } });
       } catch (err) {

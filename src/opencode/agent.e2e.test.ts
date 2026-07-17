@@ -1,6 +1,6 @@
 /**
  * opencode END-TO-END test — drives a REAL opencode server through the full
- * delivery pipeline (OpencodeAgent → opencodeHub → live SSE subscription →
+ * delivery pipeline (OpencodeAgent → per-session live SSE subscription →
  * OpencodeEventTranslator → emitted `'event'`), WITHOUT Mattermost. This is the
  * exact path that broke ("opencode answers on the server but never posts"), so
  * it catches those regressions without manual chat testing.
@@ -19,7 +19,7 @@
 
 import { describe, it, expect, afterAll } from 'bun:test';
 import { OpencodeAgent, parseOpencodeModel } from './agent.js';
-import { opencodeHub } from './server.js';
+import { opencodeServer } from './server.js';
 import type { AgentEvent } from '../agent/backend.js';
 
 const ENABLED = process.env.OPENCODE_E2E === '1';
@@ -38,7 +38,7 @@ function firstAssistantText(ev: AgentEvent): string | undefined {
 
 (ENABLED ? describe : describe.skip)('opencode E2E (real server)', () => {
   afterAll(async () => {
-    await opencodeHub.shutdown().catch(() => {});
+    await opencodeServer.shutdown().catch(() => {});
   });
 
   it(
