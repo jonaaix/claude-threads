@@ -181,6 +181,37 @@ describe('OpencodeEventTranslator', () => {
     expect(toolUse(out[0]).name).toBe('Bash');
   });
 
+  it('aliases opencode camelCase input fields to the snake_case the formatters read', () => {
+    // Regression: opencode read/write/edit put the path in `filePath`, but the
+    // Claude file-tool formatter reads `file_path` → the path rendered as empty
+    // backticks (`📄 Read \`\``). The alias is added, the original kept.
+    const out = t.translate(
+      toolPart('c1', 'read', { status: 'running', input: { filePath: '/tmp/x/image.png' }, time: { start: 0 } }),
+    );
+    const input = toolUse(out[0]).input as Record<string, unknown>;
+    expect(input.file_path).toBe('/tmp/x/image.png');
+    expect(input.filePath).toBe('/tmp/x/image.png'); // original preserved
+  });
+
+  it('aliases edit oldString/newString so the diff renders', () => {
+    const out = t.translate(
+      toolPart('c1', 'edit', {
+        status: 'running',
+        input: { filePath: '/p/a.ts', oldString: 'foo', newString: 'bar' },
+        time: { start: 0 },
+      }),
+    );
+    const input = toolUse(out[0]).input as Record<string, unknown>;
+    expect(input).toMatchObject({ file_path: '/p/a.ts', old_string: 'foo', new_string: 'bar' });
+  });
+
+  it('leaves already-matching field names (pattern/command/content) untouched', () => {
+    const out = t.translate(
+      toolPart('c1', 'grep', { status: 'running', input: { pattern: 'TODO' }, time: { start: 0 } }),
+    );
+    expect((toolUse(out[0]).input as Record<string, unknown>).pattern).toBe('TODO');
+  });
+
   it('emits tool_use once, then tool_result on completion (no duplicate tool_use)', () => {
     t.translate(toolPart('c1', 'read', { status: 'running', input: {}, title: 'Read a.ts', time: { start: 0 } }));
     const done = t.translate(

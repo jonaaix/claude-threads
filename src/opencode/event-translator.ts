@@ -223,7 +223,7 @@ export class OpencodeEventTranslator {
           id: callID,
           // opencode's own title is the most reliable, version-stable label.
           name: title || prettyToolName(part.tool),
-          input,
+          input: normalizeToolInput(input),
         },
       } as AgentEvent);
     }
@@ -338,6 +338,27 @@ export class OpencodeEventTranslator {
 function prettyToolName(tool: string): string {
   if (!tool) return 'Tool';
   return tool.charAt(0).toUpperCase() + tool.slice(1);
+}
+
+/**
+ * opencode names some tool-input fields in camelCase where the Claude tool
+ * formatters (shared with the Claude backend) read snake_case — e.g. opencode's
+ * read/write/edit put the path in `filePath`, but the formatter reads
+ * `file_path`, so the path rendered as empty backticks (`📄 Read \`\``). Add the
+ * snake_case aliases (originals kept) so those formatters render the path/diff.
+ * Fields that already match (`pattern`, `content`, `command`) need no alias.
+ */
+function normalizeToolInput(input: Record<string, unknown>): Record<string, unknown> {
+  const aliases: Record<string, string> = {
+    filePath: 'file_path',
+    oldString: 'old_string',
+    newString: 'new_string',
+  };
+  const out = { ...input };
+  for (const [camel, snake] of Object.entries(aliases)) {
+    if (out[camel] !== undefined && out[snake] === undefined) out[snake] = out[camel];
+  }
+  return out;
 }
 
 /** Best-effort human-readable string for an opencode session error payload. */
