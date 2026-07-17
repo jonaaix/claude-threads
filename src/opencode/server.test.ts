@@ -30,7 +30,7 @@ describe('OpencodeServerHub event loop self-healing', () => {
     // Fake client: each re-subscribe hands back the next queued stream.
     let subscribeCalls = 0;
     const queued: AsyncIterable<Event>[] = [streamOf(ev(2))];
-    (hub as unknown as { clientInstance: unknown }).clientInstance = {
+    const fakeClient = {
       event: {
         subscribe: async () => {
           subscribeCalls++;
@@ -48,11 +48,39 @@ describe('OpencodeServerHub event loop self-healing', () => {
     });
 
     // First stream ends after ev(1) → hub must re-subscribe to get ev(2).
-    await (hub as unknown as { runEventLoop(s: AsyncIterable<Event>): Promise<void> }).runEventLoop(
-      streamOf(ev(1)),
-    );
+    await (
+      hub as unknown as {
+        runEventLoop(c: unknown, s: AsyncIterable<Event>): Promise<void>;
+      }
+    ).runEventLoop(fakeClient, streamOf(ev(1)));
 
     expect(got).toEqual([1, 2]);
-    expect(subscribeCalls).toBe(1); // reconnected exactly once
+    expect(subscribeCalls).toBe(1); // reconnected (verified-live) exactly once
+  });
+
+  it('discards a dead subscription (no initial event) and re-subscribes until live', async () => {
+    const hub = new OpencodeServerHub();
+    let calls = 0;
+    // First subscription is dead (ends immediately, no event); second is live.
+    const queued: AsyncIterable<Event>[] = [streamOf(), streamOf(ev(7))];
+    const fakeClient = {
+      event: {
+        subscribe: async () => {
+          calls++;
+          return { stream: queued.shift() ?? streamOf() };
+        },
+      },
+    };
+    const got: number[] = [];
+    hub.register('ses_1', (e) => got.push((e as unknown as { properties: { n: number } }).properties.n));
+
+    await (
+      hub as unknown as {
+        subscribeLive(c: unknown, attempts: number): Promise<AsyncIterable<Event>>;
+      }
+    ).subscribeLive(fakeClient, 0);
+
+    expect(got).toEqual([7]); // the verified-live first event was dispatched
+    expect(calls).toBe(2); // skipped the dead subscription, re-subscribed once
   });
 });

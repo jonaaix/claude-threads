@@ -27,6 +27,12 @@ const log = createLogger('opencode');
 
 const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
+// Event-subscription resilience (see subscribeLive / runEventLoop).
+const INITIAL_SUBSCRIBE_ATTEMPTS = 5; // bounded at startup so init can fail-fast
+const LIVENESS_MS = 4000;             // a healthy subscription emits server.connected at once
+const STALL_MS = 45_000;              // no events this long on a live stream → reconnect
+const RECONNECT_DELAY_MS = 1000;
+
 /**
  * Free a port held by a LEFTOVER opencode server so we can start a fresh one
  * (picking up any config/model changes). We only SIGKILL a process whose
@@ -174,22 +180,26 @@ export class OpencodeServerHub {
     // are missed once agents start creating sessions. Also doubles as the
     // reachability check for a reused server: if it throws, init rejects and
     // `clientInstance` stays null (so the getter never hands out a dead client).
-    const events = await client.event.subscribe();
+    // Establish a VERIFIED-LIVE subscription before returning, so the caller
+    // (and the first prompt it sends) never races a dead stream. The initial
+    // attempt is bounded — if we can't get a live stream, init rejects and
+    // clientInstance stays null (the getter never hands out a dead client).
+    const stream = await this.subscribeLive(client, INITIAL_SUBSCRIBE_ATTEMPTS);
     this.clientInstance = client;
-    void this.runEventLoop(events.stream);
+    void this.runEventLoop(client, stream);
 
     return client;
   }
 
   /**
-   * Consume the event stream, self-healing forever. The initial subscription can
-   * silently stall or end (observed: a subscription established the instant the
-   * embedded server comes up can hand back a dead stream) — without recovery the
-   * hub would deliver nothing until a full bot restart. So on any end, error, or
-   * STALL (no events at all for STALL_MS — opencode heartbeats regularly, so
-   * silence means the stream is dead) we re-subscribe and keep going.
+   * Consume the event stream, self-healing forever. The subscription can
+   * silently stall or die (observed: one established the instant the embedded
+   * server comes up can hand back a dead stream) — without recovery the hub
+   * delivers nothing until a full bot restart, so opencode responses are
+   * generated but never posted. On any end, error, or STALL (no events for
+   * STALL_MS) we re-establish a live subscription and keep going.
    */
-  private async runEventLoop(initialStream: AsyncIterable<Event>): Promise<void> {
+  private async runEventLoop(client: OpencodeClient, initialStream: AsyncIterable<Event>): Promise<void> {
     let stream: AsyncIterable<Event> | null = initialStream;
     while (!this.stopped && stream) {
       try {
@@ -200,7 +210,56 @@ export class OpencodeServerHub {
         if (this.stopped) return;
         log.warn(`opencode event stream lost (${err instanceof Error ? err.message : String(err)}); reconnecting`);
       }
-      stream = await this.resubscribe();
+      // Retry forever (attempts <= 0) on reconnect; null only when stopped.
+      stream = await this.subscribeLive(client, 0).catch(() => null);
+    }
+  }
+
+  /**
+   * Subscribe and VERIFY the stream is live: opencode emits an event
+   * (`server.connected`) immediately, so a healthy stream yields within
+   * LIVENESS_MS. A stream that produces nothing in that window is the dead
+   * subscription we must avoid — discard it and re-subscribe. The verified
+   * first event is dispatched here, then the live iterator is returned for the
+   * ongoing consume loop. `attempts <= 0` retries until `stopped`.
+   */
+  private async subscribeLive(client: OpencodeClient, attempts: number): Promise<AsyncIterable<Event>> {
+    for (let i = 0; !this.stopped && (attempts <= 0 || i < attempts); i++) {
+      if (i > 0) await delay(RECONNECT_DELAY_MS);
+      let iterator: AsyncIterator<Event>;
+      try {
+        const events = await client.event.subscribe();
+        iterator = events.stream[Symbol.asyncIterator]();
+      } catch (err) {
+        log.warn(`opencode subscribe failed: ${err instanceof Error ? err.message : String(err)}`);
+        continue;
+      }
+      const first = await this.nextWithin(iterator, LIVENESS_MS);
+      if (first === 'timeout' || first.done) {
+        log.warn('opencode subscription produced no initial event; re-subscribing');
+        try { await iterator.return?.(); } catch { /* best-effort */ }
+        continue;
+      }
+      if (i > 0) log.info('opencode event stream reconnected');
+      this.dispatch(first.value);
+      return { [Symbol.asyncIterator]: () => iterator };
+    }
+    throw new Error('could not establish a live opencode event subscription');
+  }
+
+  /** `iterator.next()` racing a timeout; resolves to `'timeout'` if it stalls. */
+  private async nextWithin(
+    iterator: AsyncIterator<Event>,
+    ms: number,
+  ): Promise<IteratorResult<Event> | 'timeout'> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<'timeout'>((resolve) => {
+      timer = setTimeout(() => resolve('timeout'), ms);
+    });
+    try {
+      return await Promise.race([iterator.next(), timeout]);
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
 
@@ -210,20 +269,11 @@ export class OpencodeServerHub {
    * iterator on exit so the dead SSE connection is released.
    */
   private async consumeWithWatchdog(stream: AsyncIterable<Event>): Promise<void> {
-    const STALL_MS = 30_000;
     const iterator = stream[Symbol.asyncIterator]();
     try {
       while (!this.stopped) {
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        const stalled = new Promise<never>((_, reject) => {
-          timer = setTimeout(() => reject(new Error(`no events for ${STALL_MS}ms`)), STALL_MS);
-        });
-        let result: IteratorResult<Event>;
-        try {
-          result = await Promise.race([iterator.next(), stalled]);
-        } finally {
-          if (timer) clearTimeout(timer);
-        }
+        const result = await this.nextWithin(iterator, STALL_MS);
+        if (result === 'timeout') throw new Error(`no events for ${STALL_MS}ms`);
         if (result.done) return; // stream ended cleanly
         this.dispatch(result.value);
       }
@@ -247,24 +297,6 @@ export class OpencodeServerHub {
     } catch (err) {
       log.error(`Listener for session ${sessionId} threw: ${err}`);
     }
-  }
-
-  /** Re-establish the event subscription, retrying with backoff until it succeeds. */
-  private async resubscribe(): Promise<AsyncIterable<Event> | null> {
-    const RECONNECT_DELAY_MS = 1000;
-    while (!this.stopped) {
-      const client = this.clientInstance;
-      if (!client) return null;
-      try {
-        const events = await client.event.subscribe();
-        log.info('opencode event stream reconnected');
-        return events.stream;
-      } catch (err) {
-        log.warn(`opencode re-subscribe failed, retrying: ${err instanceof Error ? err.message : String(err)}`);
-        await delay(RECONNECT_DELAY_MS);
-      }
-    }
-    return null;
   }
 
   /** Route this opencode session's events to `listener`. */
