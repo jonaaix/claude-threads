@@ -94,7 +94,7 @@ export function sessionIdOf(event: Event): string | undefined {
 
 type Listener = (event: Event) => void;
 
-class OpencodeServerHub {
+export class OpencodeServerHub {
   private server: { url: string; close(): void } | null = null;
   private clientInstance: OpencodeClient | null = null;
   private initPromise: Promise<OpencodeClient> | null = null;
@@ -176,29 +176,95 @@ class OpencodeServerHub {
     // `clientInstance` stays null (so the getter never hands out a dead client).
     const events = await client.event.subscribe();
     this.clientInstance = client;
-    void this.consume(events.stream);
+    void this.runEventLoop(events.stream);
 
     return client;
   }
 
-  private async consume(stream: AsyncIterable<Event>): Promise<void> {
-    try {
-      for await (const event of stream) {
-        const sessionId = sessionIdOf(event);
-        if (!sessionId) continue;
-        const listener = this.listeners.get(sessionId);
-        if (listener) {
-          try {
-            listener(event);
-          } catch (err) {
-            log.error(`Listener for session ${sessionId} threw: ${err}`);
-          }
-        }
+  /**
+   * Consume the event stream, self-healing forever. The initial subscription can
+   * silently stall or end (observed: a subscription established the instant the
+   * embedded server comes up can hand back a dead stream) — without recovery the
+   * hub would deliver nothing until a full bot restart. So on any end, error, or
+   * STALL (no events at all for STALL_MS — opencode heartbeats regularly, so
+   * silence means the stream is dead) we re-subscribe and keep going.
+   */
+  private async runEventLoop(initialStream: AsyncIterable<Event>): Promise<void> {
+    let stream: AsyncIterable<Event> | null = initialStream;
+    while (!this.stopped && stream) {
+      try {
+        await this.consumeWithWatchdog(stream);
+        if (this.stopped) return;
+        log.warn('opencode event stream ended; reconnecting');
+      } catch (err) {
+        if (this.stopped) return;
+        log.warn(`opencode event stream lost (${err instanceof Error ? err.message : String(err)}); reconnecting`);
       }
-      if (!this.stopped) log.warn('opencode event stream ended unexpectedly');
-    } catch (err) {
-      if (!this.stopped) log.error(`opencode event stream error: ${err}`);
+      stream = await this.resubscribe();
     }
+  }
+
+  /**
+   * Iterate the stream, dispatching events, with a stall watchdog: if no event
+   * arrives within STALL_MS, throw so the caller reconnects. Always closes the
+   * iterator on exit so the dead SSE connection is released.
+   */
+  private async consumeWithWatchdog(stream: AsyncIterable<Event>): Promise<void> {
+    const STALL_MS = 30_000;
+    const iterator = stream[Symbol.asyncIterator]();
+    try {
+      while (!this.stopped) {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const stalled = new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`no events for ${STALL_MS}ms`)), STALL_MS);
+        });
+        let result: IteratorResult<Event>;
+        try {
+          result = await Promise.race([iterator.next(), stalled]);
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
+        if (result.done) return; // stream ended cleanly
+        this.dispatch(result.value);
+      }
+    } finally {
+      try {
+        await iterator.return?.();
+      } catch {
+        // ignore — best-effort close of a possibly-dead stream
+      }
+    }
+  }
+
+  /** Route one event to its session's listener (no-op for sessionless events). */
+  private dispatch(event: Event): void {
+    const sessionId = sessionIdOf(event);
+    if (!sessionId) return;
+    const listener = this.listeners.get(sessionId);
+    if (!listener) return;
+    try {
+      listener(event);
+    } catch (err) {
+      log.error(`Listener for session ${sessionId} threw: ${err}`);
+    }
+  }
+
+  /** Re-establish the event subscription, retrying with backoff until it succeeds. */
+  private async resubscribe(): Promise<AsyncIterable<Event> | null> {
+    const RECONNECT_DELAY_MS = 1000;
+    while (!this.stopped) {
+      const client = this.clientInstance;
+      if (!client) return null;
+      try {
+        const events = await client.event.subscribe();
+        log.info('opencode event stream reconnected');
+        return events.stream;
+      } catch (err) {
+        log.warn(`opencode re-subscribe failed, retrying: ${err instanceof Error ? err.message : String(err)}`);
+        await delay(RECONNECT_DELAY_MS);
+      }
+    }
+    return null;
   }
 
   /** Route this opencode session's events to `listener`. */
