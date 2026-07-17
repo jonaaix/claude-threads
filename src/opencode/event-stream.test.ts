@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import type { Event } from '@opencode-ai/sdk';
-import { OpencodeSessionStream, sessionIdOf, type EventSubscribeClient } from './event-stream.js';
+import { OpencodeSessionStream, sessionIdOf, probeLive, type EventSubscribeClient } from './event-stream.js';
 
 // A finite async stream that yields the given events then ends.
 function streamOf(...events: Event[]): AsyncIterable<Event> {
@@ -52,6 +52,33 @@ describe('sessionIdOf', () => {
     expect(sessionIdOf({ properties: { part: { sessionID: 'b' } } } as unknown as Event)).toBe('b');
     expect(sessionIdOf({ properties: { info: { sessionID: 'c' } } } as unknown as Event)).toBe('c');
     expect(sessionIdOf({ properties: {} } as unknown as Event)).toBeUndefined();
+  });
+});
+
+describe('probeLive', () => {
+  it('resolves when the server emits an event immediately', async () => {
+    const { client } = fakeClientFrom([streamOf(ev(1))]);
+    await expect(probeLive(client, 100)).resolves.toBeUndefined();
+  });
+
+  it('rejects when the stream is empty (reachable socket, dead/wrong server)', async () => {
+    const { client } = fakeClientFrom([streamOf()]); // ends immediately, no event
+    await expect(probeLive(client, 100)).rejects.toThrow(/unreachable or dead/);
+  });
+
+  it('rejects when subscribe throws (server down / wrong port)', async () => {
+    const client: EventSubscribeClient = {
+      event: { subscribe: async () => { throw new Error('ECONNREFUSED'); } },
+    };
+    await expect(probeLive(client, 100)).rejects.toThrow(/ECONNREFUSED/);
+  });
+
+  it('rejects on timeout when the stream never yields', async () => {
+    const hanging: AsyncIterable<Event> = {
+      [Symbol.asyncIterator]: () => ({ next: () => new Promise<IteratorResult<Event>>(() => {}) }),
+    };
+    const client: EventSubscribeClient = { event: { subscribe: async () => ({ stream: hanging }) } };
+    await expect(probeLive(client, 20)).rejects.toThrow(/no events within 20ms/);
   });
 });
 

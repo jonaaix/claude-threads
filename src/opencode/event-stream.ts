@@ -52,6 +52,32 @@ export interface EventSubscribeClient {
   event: { subscribe: () => Promise<{ stream: AsyncIterable<Event> }> };
 }
 
+/**
+ * Fail-fast reachability check: a live opencode server emits an event
+ * (`server.connected`) the instant you subscribe, so a healthy server yields
+ * within `ms`. Rejects if the subscribe call errors (server down / wrong port)
+ * or the stream produces nothing in the window (reachable socket but dead/wrong
+ * server). Used once at startup so a bad server surfaces immediately instead of
+ * ~25s later when the first agent tries to subscribe.
+ */
+export async function probeLive(client: EventSubscribeClient, ms = LIVENESS_MS): Promise<void> {
+  const events = await client.event.subscribe(); // throws if the server is unreachable
+  const iterator = events.stream[Symbol.asyncIterator]();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<'timeout'>((resolve) => {
+    timer = setTimeout(() => resolve('timeout'), ms);
+  });
+  try {
+    const first = await Promise.race([iterator.next(), timeout]);
+    if (first === 'timeout' || first.done) {
+      throw new Error(`no events within ${ms}ms (server unreachable or dead)`);
+    }
+  } finally {
+    if (timer) clearTimeout(timer);
+    try { await iterator.return?.(); } catch { /* best-effort close of the probe */ }
+  }
+}
+
 export class OpencodeSessionStream {
   private stopped = false;
   private started = false;

@@ -23,7 +23,7 @@ import { execSync } from 'child_process';
 import { dirname, delimiter } from 'path';
 import { createLogger } from '../utils/logger.js';
 import { getOpencodePath } from './version-check.js';
-import { OpencodeSessionStream } from './event-stream.js';
+import { OpencodeSessionStream, probeLive } from './event-stream.js';
 
 const log = createLogger('opencode');
 
@@ -153,6 +153,23 @@ export class OpencodeServer {
       }
     }
     const client = createOpencodeClient({ baseUrl: url });
+
+    // Fail-fast reachability check: verify the server is actually alive before
+    // handing out the client. Critical for the reuse-fallback branch above
+    // (connecting to a pre-existing server that might be dead/wrong) — without
+    // it a bad server only surfaces ~25s later at the first agent's subscribe.
+    // On failure init rejects and clientInstance stays null (the getter never
+    // hands out a dead client); ensureStarted() clears initPromise so a later
+    // message retries.
+    try {
+      await probeLive(client);
+    } catch (err) {
+      throw new Error(
+        `opencode server at ${url} is not reachable: ${err instanceof Error ? err.message : String(err)}`,
+        { cause: err },
+      );
+    }
+
     this.clientInstance = client;
     return client;
   }
