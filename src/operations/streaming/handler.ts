@@ -11,7 +11,7 @@
 import { lstat, mkdir, mkdtemp, rm, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import type { PlatformClient, PlatformFile } from '../../platform/index.js';
+import type { PlatformClient, PlatformFile, ThreadFile } from '../../platform/index.js';
 import type { Session } from '../../session/types.js';
 import { createLogger } from '../../utils/logger.js';
 import { sanitizeFilename, dedupeFilename, formatBytes } from '../../utils/safe-filename.js';
@@ -99,6 +99,65 @@ function sanitizeForPrompt(value: string): string {
 }
 
 /**
+ * Create a symlink-safe per-call subdirectory under uploadDir, or null if the
+ * upload dir is a symlink (refused). A local attacker on a shared host could
+ * otherwise pre-create the predictable per-thread path as a symlink to a
+ * sensitive directory and have the bot write attacker-controlled bytes into
+ * it. mkdtemp + the caller's 'wx' write flag close most of the race window;
+ * the lstat check closes the rest.
+ */
+async function prepareMessageDir(uploadDir: string): Promise<string | null> {
+  await mkdir(uploadDir, { recursive: true, mode: 0o700 });
+  const stat = await lstat(uploadDir);
+  if (stat.isSymbolicLink()) {
+    log.error(`Upload dir is a symlink, refusing all writes: ${uploadDir}`);
+    return null;
+  }
+  // mkdtemp gives us an atomically-created leaf with a random suffix —
+  // collisions between concurrent messages are impossible.
+  return mkdtemp(join(uploadDir, `${Date.now().toString(36)}-`));
+}
+
+/**
+ * Download thread attachments (from history / missed-messages delta) into the
+ * CURRENT session's upload dir and return a map of `fileId → absolute local
+ * path`. Used so a bot referencing an image posted earlier in the thread (or
+ * by a peer) gets a readable local path instead of a platform URL its agent
+ * can't authenticate to (opencode's webfetch has no bot token).
+ *
+ * Downloads FRESH into the active session's own dir, so it never depends on
+ * another (possibly-cleaned-up) session's temp files and is never deleted
+ * underfoot while this session is alive. Best-effort: a file that can't be
+ * downloaded is simply omitted (the caller falls back to the URL).
+ */
+export async function resolveThreadAttachments(
+  platform: PlatformClient,
+  uploadDir: string,
+  files: ThreadFile[],
+): Promise<Map<string, string>> {
+  const resolved = new Map<string, string>();
+  if (files.length === 0 || !platform.downloadFile) return resolved;
+
+  const messageDir = await prepareMessageDir(uploadDir);
+  if (!messageDir) return resolved;
+
+  const usedNames = new Set<string>();
+  for (const file of files) {
+    if (resolved.has(file.id)) continue; // same attachment referenced twice
+    try {
+      const buffer = await platform.downloadFile(file.id);
+      const safeName = dedupeFilename(sanitizeFilename(file.name), usedNames);
+      const absolutePath = join(messageDir, safeName);
+      await writeFile(absolutePath, buffer, { mode: 0o600, flag: 'wx' });
+      resolved.set(file.id, absolutePath);
+    } catch (err) {
+      log.debug(`resolveThreadAttachments: ${file.name} skipped (${err instanceof Error ? err.message : String(err)})`);
+    }
+  }
+  return resolved;
+}
+
+/**
  * Download each file and write it to a fresh subdirectory under uploadDir.
  * Each call gets its own subdirectory so two messages uploading the same
  * filename don't collide.
@@ -126,24 +185,13 @@ export async function saveFilesToUploadDir(
     return { saved, skipped };
   }
 
-  // Refuse to write into a symlinked upload dir — a local attacker on a
-  // shared host could otherwise pre-create the (predictable) per-thread path
-  // as a symlink to a sensitive directory and have the bot write attacker-
-  // controlled bytes into it. mkdtemp + 'wx' close most of the race window;
-  // the lstat check closes the rest.
-  await mkdir(uploadDir, { recursive: true, mode: 0o700 });
-  const stat = await lstat(uploadDir);
-  if (stat.isSymbolicLink()) {
+  const messageDir = await prepareMessageDir(uploadDir);
+  if (!messageDir) {
     for (const file of files) {
       skipped.push({ name: file.name, reason: 'Refusing to write under symlinked upload directory' });
     }
-    log.error(`Upload dir is a symlink, refusing all writes: ${uploadDir}`);
     return { saved, skipped };
   }
-
-  // mkdtemp gives us an atomically-created leaf with a random suffix —
-  // collisions between concurrent messages are impossible.
-  const messageDir = await mkdtemp(join(uploadDir, `${Date.now().toString(36)}-`));
 
   // Filenames used within this single call, so multiple identically-named
   // attachments (e.g. several clipboard pastes that all arrive as `image.png`)

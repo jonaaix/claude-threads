@@ -384,13 +384,17 @@ export function computeMissedDelta(
  * `@name` like any participant. Respects DELTA_TOTAL_CHARS. Returns '' when
  * there is nothing to inject.
  */
-export function formatMissedMessagesForClaude(messages: ThreadMessage[]): string {
+export function formatMissedMessagesForClaude(
+  messages: ThreadMessage[],
+  attachmentPaths?: Map<string, string>,
+): string {
   if (messages.length === 0) return '';
   const lines: string[] = [
     '[Messages you missed while another assistant was active. Each line is '
       + 'attributed to its author; other assistants appear as @name like any '
-      + 'participant. Any attachments are listed as URLs you can fetch. Use these '
-      + 'only as context for the request that follows:]',
+      + 'participant. Attachments are given as a local file path (Read it) when '
+      + 'available, otherwise a URL. Use these only as context for the request '
+      + 'that follows:]',
     '',
   ];
   let budget = DELTA_TOTAL_CHARS;
@@ -402,10 +406,13 @@ export function formatMissedMessagesForClaude(messages: ThreadMessage[]): string
       content = content.substring(0, Math.max(0, budget)) + '…';
     }
     let line = `@${msg.username}: ${content}`;
-    // Attach file URLs so the bot can fetch them (e.g. a screenshot a peer
-    // posted) — the delta itself only carries text.
+    // Reference attachments so the bot can look at them (e.g. a screenshot a
+    // peer posted). Prefer a local path (downloaded into this session's upload
+    // dir) — an agent like opencode can Read that, but can't authenticate to a
+    // platform file URL. Fall back to the URL when no local copy is available.
     if (msg.files && msg.files.length > 0) {
-      line += ` [attachments: ${msg.files.map(f => `${f.name} → ${f.url}`).join(', ')}]`;
+      const rendered = msg.files.map(f => `${f.name} → ${attachmentPaths?.get(f.id) ?? f.url}`);
+      line += ` [attachments: ${rendered.join(', ')}]`;
     }
     budget -= line.length;
     lines.push(line);

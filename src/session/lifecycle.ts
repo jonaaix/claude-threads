@@ -19,7 +19,7 @@ import type { OverheadVisibility, PermissionMode } from '../config/index.js';
 import { DEFAULT_OVERHEAD_VISIBILITY } from '../config/index.js';
 import { clearAllTimers } from './timer-manager.js';
 import { isAuthorizedForSession } from './authorization.js';
-import type { PlatformClient, PlatformFile } from '../platform/index.js';
+import type { PlatformClient, PlatformFile, ThreadMessage } from '../platform/index.js';
 import type { ClaudeCliOptions, ClaudeEvent, RateLimitHit } from '../claude/cli.js';
 import { ClaudeCli } from '../claude/cli.js';
 import type { AgentBackend } from '../agent/backend.js';
@@ -57,6 +57,7 @@ import {
   cleanupSessionUploads,
   getSessionUploadDir,
   postSkippedFilesFeedback,
+  resolveThreadAttachments,
 } from '../operations/streaming/handler.js';
 import { detectWorktreeInfo } from '../git/worktree.js';
 
@@ -301,6 +302,31 @@ export function handleRateLimit(session: Session, hit: RateLimitHit, ctx: Sessio
 function writeScopeDirsFor(ctx: SessionContext, platformId: string, workingDir: string): string[] | undefined {
   if (ctx.ops.getPlatformWriteScope(platformId) !== 'workingDir') return undefined;
   return [workingDir, tmpdir()];
+}
+
+/**
+ * Download any attachments referenced in a missed-messages delta into THIS
+ * session's upload dir, returning a `fileId → local path` map for
+ * `formatMissedMessagesForClaude`. Lets a bot Read an image posted earlier in
+ * the thread (or by a peer) instead of being handed a platform URL its agent
+ * can't authenticate to (opencode's webfetch has no bot token). Best-effort:
+ * on any failure it returns what it resolved (or empty), and the formatter
+ * falls back to the URL. Fresh download into the active session's own dir, so
+ * it never races cleanup of another session's temp files.
+ */
+async function resolveDeltaAttachments(
+  session: Session,
+  delta: ThreadMessage[],
+): Promise<Map<string, string>> {
+  const files = delta.flatMap(m => m.files ?? []);
+  if (files.length === 0) return new Map();
+  try {
+    const uploadDir = getSessionUploadDir(session.platformId, session.threadId);
+    return await resolveThreadAttachments(session.platform, uploadDir, files);
+  } catch (err) {
+    sessionLog(session).debug(`resolveDeltaAttachments failed: ${err instanceof Error ? err.message : String(err)}`);
+    return new Map();
+  }
 }
 
 /**
@@ -1311,8 +1337,9 @@ export async function startSession(
         excludeBotMessages: false,
       });
       const seed = computeMissedDelta(history, undefined, session.platform.getBotName(), excludePostId);
+      const seedAttachments = await resolveDeltaAttachments(session, seed);
       const prompt = seed.length > 0
-        ? formatMissedMessagesForClaude(seed) + '\n' + messageText
+        ? formatMissedMessagesForClaude(seed, seedAttachments) + '\n' + messageText
         : messageText;
       if (history.length > 0) {
         session.lastSeenPostId = history[history.length - 1].id;
@@ -1806,7 +1833,8 @@ export async function sendFollowUp(
         options?.triggeringPostId
       );
       if (delta.length > 0) {
-        messageToSend = formatMissedMessagesForClaude(delta) + '\n' + messageToSend;
+        const deltaAttachments = await resolveDeltaAttachments(session, delta);
+        messageToSend = formatMissedMessagesForClaude(delta, deltaAttachments) + '\n' + messageToSend;
       }
       if (history.length > 0) {
         session.lastSeenPostId = history[history.length - 1].id;

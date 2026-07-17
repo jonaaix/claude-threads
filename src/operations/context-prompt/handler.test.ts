@@ -573,7 +573,7 @@ describe('context-prompt', () => {
       expect(out).not.toContain('x'.repeat(DELTA_TRUNC + 1));
     });
 
-    it('appends attachment URLs so the bot can fetch them (e.g. a peer screenshot)', () => {
+    it('appends attachment URLs when no local copy is available (fallback)', () => {
       const withFile: ThreadMessage = {
         id: 'p', userId: 'u', username: 'tarek', message: 'see this', createAt: 0,
         files: [{ id: 'f1', name: 'shot.png', url: 'https://mm.example/api/v4/files/f1' }],
@@ -581,6 +581,32 @@ describe('context-prompt', () => {
       const out = formatMissedMessagesForClaude([withFile]);
       expect(out).toContain('@tarek: see this');
       expect(out).toContain('attachments: shot.png → https://mm.example/api/v4/files/f1');
+    });
+
+    it('prefers a local path over the URL when the attachment was downloaded', () => {
+      // Regression: opencode can Read a local path but can't authenticate to a
+      // platform file URL — its webfetch failed on the mm.allaoui.de URL.
+      const withFile: ThreadMessage = {
+        id: 'p', userId: 'u', username: 'tarek', message: 'see this', createAt: 0,
+        files: [{ id: 'f1', name: 'shot.png', url: 'https://mm.example/api/v4/files/f1' }],
+      };
+      const paths = new Map([['f1', '/tmp/uploads/abc/shot.png']]);
+      const out = formatMissedMessagesForClaude([withFile], paths);
+      expect(out).toContain('attachments: shot.png → /tmp/uploads/abc/shot.png');
+      expect(out).not.toContain('https://mm.example');
+    });
+
+    it('falls back to the URL per-file when only some downloads succeeded', () => {
+      const msg2: ThreadMessage = {
+        id: 'p', userId: 'u', username: 'tarek', message: 'two files', createAt: 0,
+        files: [
+          { id: 'f1', name: 'a.png', url: 'https://mm.example/files/f1' },
+          { id: 'f2', name: 'b.png', url: 'https://mm.example/files/f2' },
+        ],
+      };
+      const out = formatMissedMessagesForClaude([msg2], new Map([['f1', '/tmp/uploads/a.png']]));
+      expect(out).toContain('a.png → /tmp/uploads/a.png');
+      expect(out).toContain('b.png → https://mm.example/files/f2');
     });
   });
 });
