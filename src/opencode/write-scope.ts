@@ -24,7 +24,8 @@
  * "bash": "ask" } }` in an `opencode.json` inside the bot's working directory.
  */
 
-import { resolve, sep } from 'path';
+import { readFileSync, writeFileSync } from 'fs';
+import { join, resolve, sep } from 'path';
 
 /** The permission-request fields the policy inspects (subset of SDK Permission). */
 export interface PermissionLike {
@@ -115,4 +116,43 @@ export function evaluateWriteScope(
   // Write request: must name at least one path, and every path must be in scope.
   if (paths.length === 0) return 'reject';
   return paths.every(inScope) ? 'allow' : 'reject';
+}
+
+/**
+ * Ensure the working directory's `opencode.json` marks edit/bash permissions
+ * `"ask"`, so opencode actually emits permission requests for the bridge to
+ * evaluate — without it a write scope silently has no effect. Non-destructive:
+ * only missing keys are added; existing values (and all other config) are left
+ * alone. A running opencode server picks the project config up on the next
+ * session (verified live). Best-effort: returns what happened for logging.
+ */
+export function ensureAskPermissionConfig(
+  workingDir: string,
+): 'created' | 'updated' | 'ok' | 'failed' {
+  const file = join(workingDir, 'opencode.json');
+  try {
+    let config: Record<string, unknown>;
+    let exists = true;
+    try {
+      config = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') return 'failed'; // unreadable/invalid → don't clobber
+      exists = false;
+      config = {};
+    }
+    const permission = (config.permission ?? {}) as Record<string, unknown>;
+    let changed = false;
+    for (const key of ['edit', 'bash'] as const) {
+      if (permission[key] === undefined) {
+        permission[key] = 'ask';
+        changed = true;
+      }
+    }
+    if (!changed) return 'ok';
+    config.permission = permission;
+    writeFileSync(file, JSON.stringify(config, null, 2) + '\n', 'utf8');
+    return exists ? 'updated' : 'created';
+  } catch {
+    return 'failed';
+  }
 }

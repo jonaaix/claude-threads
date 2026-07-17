@@ -27,7 +27,7 @@ import type { AgentBackend } from '../agent/backend.js';
 import { OpencodeEventTranslator } from './event-translator.js';
 import { opencodeServer } from './server.js';
 import type { OpencodeSessionStream } from './event-stream.js';
-import { evaluateWriteScope } from './write-scope.js';
+import { evaluateWriteScope, ensureAskPermissionConfig } from './write-scope.js';
 import { createLogger } from '../utils/logger.js';
 
 /** A concrete opencode model selection, as the SDK's prompt body expects it. */
@@ -136,6 +136,19 @@ export class OpencodeAgent extends EventEmitter implements AgentBackend {
   }
 
   private async init(): Promise<void> {
+    // Scoped bots need opencode to ASK for write/bash permissions (the bridge
+    // then answers instantly per the scope policy — the user never confirms
+    // anything). Ensure the project config says so; without it opencode never
+    // asks and the scope would silently not apply.
+    if (this.options.writeScopeDirs) {
+      const result = ensureAskPermissionConfig(this.options.workingDir);
+      if (result === 'created' || result === 'updated') {
+        this.log.info(`write-scope: ${result} ${this.options.workingDir}/opencode.json (permission.edit/bash = "ask")`);
+      } else if (result === 'failed') {
+        this.log.warn(`write-scope: could not ensure ${this.options.workingDir}/opencode.json — the scope may not be enforced`);
+      }
+    }
+
     const client = await opencodeServer.ensureStarted();
 
     if (this.options.opencodeSessionId) {
