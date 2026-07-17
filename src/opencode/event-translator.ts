@@ -80,6 +80,17 @@ export class OpencodeEventTranslator {
   private readonly toolUseEmitted = new Set<string>();
   /** callIDs for which we've emitted a `tool_result`. */
   private readonly toolResultEmitted = new Set<string>();
+  /**
+   * Whether anything happened since the last emitted `result`. opencode can
+   * close one turn several times in a burst (observed on abort: session.error,
+   * then session.idle 2ms later, then ANOTHER idle after the aborted tool
+   * parts finalize). Each `result` triggers a downstream flush/status cycle,
+   * so stray turn-ends must be suppressed: an idle with no new activity since
+   * the last result emits nothing. Starts true so a turn that produces no
+   * events at all still closes on its first idle.
+   */
+  private activitySinceResult = true;
+
   /** Usage/cost from the most recent assistant message, for the `result` event. */
   private lastAssistant: {
     modelID?: string;
@@ -99,11 +110,14 @@ export class OpencodeEventTranslator {
   translate(event: Event): AgentEvent[] {
     switch (event.type) {
       case 'message.part.updated':
+        this.activitySinceResult = true;
         return this.onPartUpdated(event.properties.part, event.properties.delta);
       case 'message.updated':
+        this.activitySinceResult = true;
         this.onMessageUpdated(event.properties.info);
         return [];
       case 'todo.updated':
+        this.activitySinceResult = true;
         return this.onTodoUpdated(event.properties.todos);
       case 'session.idle':
         return this.onIdle();
@@ -282,6 +296,11 @@ export class OpencodeEventTranslator {
         ops.push(...this.emitTextPart(id));
       }
     }
+    // Stray idle: the turn was already closed (e.g. by session.error moments
+    // ago) and nothing happened since — emitting another result would trigger
+    // a redundant flush/status cycle downstream.
+    if (ops.length === 0 && !this.activitySinceResult) return [];
+    this.activitySinceResult = false;
     ops.push(this.resultEvent(false));
     return ops;
   }
@@ -295,6 +314,7 @@ export class OpencodeEventTranslator {
         message: { content: [{ type: 'text', text: `⚠️ ${message}` }] },
       } as AgentEvent);
     }
+    this.activitySinceResult = false;
     ops.push(this.resultEvent(true));
     return ops;
   }

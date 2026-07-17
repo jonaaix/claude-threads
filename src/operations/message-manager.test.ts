@@ -542,6 +542,41 @@ describe('MessageManager', () => {
       expect(platform.createPost).toHaveBeenCalledTimes(2);
     });
 
+    it('serializes concurrent events — an abort burst must not duplicate posts', async () => {
+      // Slow createPost down so overlapping flushes would actually interleave.
+      (platform.createPost as ReturnType<typeof mock>).mockImplementation(
+        async (content: string): Promise<PlatformPost> => {
+          await new Promise((r) => setTimeout(r, 5));
+          return {
+            id: `post_${Math.random().toString(36).slice(2)}`,
+            platformId: 'test',
+            channelId: 'channel-1',
+            message: content,
+            createAt: Date.now(),
+            userId: 'bot',
+          };
+        }
+      );
+
+      // Two tools started earlier in the turn...
+      await manager.handleEvent({ type: 'tool_use' as const, tool_use: { id: 't1', name: 'Read', input: { file_path: '/a' } } });
+      await manager.handleEvent({ type: 'tool_use' as const, tool_use: { id: 't2', name: 'Read', input: { file_path: '/b' } } });
+
+      // ...then the abort burst lands fire-and-forget (no awaits between), the
+      // way the agent's emitter delivers it: two error tool-results + turn end.
+      await Promise.all([
+        manager.handleEvent({ type: 'tool_result' as const, tool_result: { tool_use_id: 't1', is_error: true } }),
+        manager.handleEvent({ type: 'tool_result' as const, tool_result: { tool_use_id: 't2', is_error: true } }),
+        manager.handleEvent({ type: 'result' as const, subtype: 'success', is_error: false, result: {} }),
+      ]);
+
+      // Exactly ONE working post — concurrent flushes used to each see
+      // "no post yet" and create their own duplicate.
+      const workingPosts = (platform.createPost as ReturnType<typeof mock>).mock.calls
+        .filter((c: unknown[]) => String(c[0]).includes('Working'));
+      expect(workingPosts).toHaveLength(1);
+    });
+
     it('pads the top of the working block so the header has breathing room', async () => {
       await manager.handleEvent({
         type: 'assistant' as const,

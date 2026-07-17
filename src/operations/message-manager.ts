@@ -292,10 +292,28 @@ export class MessageManager {
     });
   }
 
+  /** Tail of the event-processing chain — see handleEvent. */
+  private eventChain: Promise<void> = Promise.resolve();
+
   /**
-   * Handle a Claude CLI event
+   * Handle a Claude CLI event.
+   *
+   * SERIALIZED: events arrive fire-and-forget from the agent's emitter, and
+   * several can land within milliseconds (an opencode abort emits
+   * session.error + session.idle + late tool errors in one burst). Processing
+   * them concurrently raced the executors' async flushes — each in-flight
+   * flush saw "no post yet" and created its own, duplicating the same content
+   * post/working block up to three times in the thread.
    */
-  async handleEvent(event: ClaudeEvent): Promise<void> {
+  handleEvent(event: ClaudeEvent): Promise<void> {
+    const run = this.eventChain.then(() => this.processEvent(event));
+    // Keep the chain alive after a failure (the error still propagates to
+    // this call's awaiter).
+    this.eventChain = run.catch(() => {});
+    return run;
+  }
+
+  private async processEvent(event: ClaudeEvent): Promise<void> {
     const logger = log.forSession(this.sessionId);
 
     // Build transformation context

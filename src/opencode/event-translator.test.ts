@@ -262,6 +262,26 @@ describe('OpencodeEventTranslator', () => {
     expect(result.is_error).toBe(true);
   });
 
+  it('suppresses a stray session.idle after the turn was already closed (abort burst)', () => {
+    // Observed on abort: session.error, then session.idle 2ms later with no
+    // activity in between — the second turn-end must NOT emit another result
+    // (each result triggers a full flush/status cycle downstream).
+    t.translate(assistantMessage({ id: MSG_ID }));
+    t.translate(oc({ type: 'session.error', properties: { error: { name: 'AbortedError', data: { message: 'Aborted' } } } }));
+
+    expect(t.translate(idle)).toEqual([]);
+
+    // New activity (the aborted tool parts finalizing late) re-opens the turn,
+    // so the NEXT idle closes it with a result again.
+    t.translate(toolPart('c9', 'read', { status: 'running', input: {}, title: 'read' }));
+    t.translate(toolPart('c9', 'read', { status: 'error', input: {}, title: 'read', error: 'aborted' }));
+    const out = t.translate(idle);
+    expect(out[out.length - 1].type).toBe('result');
+
+    // And a second bare idle right after is again suppressed.
+    expect(t.translate(idle)).toEqual([]);
+  });
+
   // -------------------------------------------------------------------------
   // Integration through the real transformer
   // -------------------------------------------------------------------------
