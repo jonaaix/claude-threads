@@ -1743,7 +1743,14 @@ async function main() {
   mcpLogger.info(`Permission server ready (platform: ${PLATFORM_TYPE})`);
 }
 
-main().catch((err) => {
-  mcpLogger.error(`Fatal: ${err}`);
-  process.exit(1);
-});
+// Auto-start the stdio server ONLY when spawned as the dedicated MCP child
+// (the Claude backend spawns `node mcp-server.js` with this flag set — see
+// cli.ts). Without the flag, importing this module is side-effect-free, so the
+// in-process opencode MCP host can reuse the exported `handle*With` cores
+// without accidentally starting a stdio server or reading a live platform env.
+if (process.env.CLAUDE_THREADS_MCP_STDIO === '1') {
+  main().catch((err) => {
+    mcpLogger.error(`Fatal: ${err}`);
+    process.exit(1);
+  });
+}

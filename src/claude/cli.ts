@@ -293,6 +293,10 @@ export function buildPermissionArgs(opts: {
   }
 
   const mcpEnv: Record<string, string> = {
+    // Tells mcp-server.ts to auto-start its stdio server. Only the dedicated
+    // MCP child sets this; importing the module in-process (opencode host)
+    // leaves it unset so no stdio server starts. See mcp-server.ts bottom.
+    CLAUDE_THREADS_MCP_STDIO: '1',
     PLATFORM_TYPE: opts.platformConfig.type,
     PLATFORM_URL: opts.platformConfig.url,
     PLATFORM_TOKEN: opts.platformConfig.token,
