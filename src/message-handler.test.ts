@@ -684,7 +684,7 @@ describe('handleMessage', () => {
 
       await handleMessage(client, session, post, user, options);
 
-      expect(session.resumePausedSession).toHaveBeenCalledWith('thread1', 'continue please', undefined, 'allowed-user', 'test-platform');
+      expect(session.resumePausedSession).toHaveBeenCalledWith('thread1', 'continue please', undefined, 'allowed-user', 'test-platform', 'post1');
     });
 
     test('rejects resume for unauthorized user', async () => {
@@ -806,7 +806,7 @@ describe('handleMessage', () => {
 
       await handleMessage(client, session, post, user, options);
 
-      expect(session.resumePausedSession).toHaveBeenCalledWith('thread1', 'please continue', undefined, 'allowed-user', 'test-platform');
+      expect(session.resumePausedSession).toHaveBeenCalledWith('thread1', 'please continue', undefined, 'allowed-user', 'test-platform', 'post1');
     });
 
     test('quiet mode off (default): a non-mention reply still resumes the paused session', async () => {
@@ -828,7 +828,7 @@ describe('handleMessage', () => {
 
       await handleMessage(client, session, post, user, options);
 
-      expect(session.resumePausedSession).toHaveBeenCalledWith('thread1', 'continue please', undefined, 'allowed-user', 'test-platform');
+      expect(session.resumePausedSession).toHaveBeenCalledWith('thread1', 'continue please', undefined, 'allowed-user', 'test-platform', 'post1');
     });
   });
 

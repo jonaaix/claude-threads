@@ -368,7 +368,9 @@ export async function handleMessage(
       const files = post.metadata?.files;
 
       if (content || files?.length) {
-        await session.resumePausedSession(threadRoot, content, files, username, platformId);
+        // Pass the triggering post id so the missed-messages delta excludes it
+        // (it's delivered as the current request, not as missed context).
+        await session.resumePausedSession(threadRoot, content, files, username, platformId, post.id);
       }
       return;
     }

@@ -330,6 +330,53 @@ async function resolveDeltaAttachments(
 }
 
 /**
+ * Prepend the multi-bot "missed messages" delta to a message, catching this
+ * bot up on what happened in the thread while another bot held the baton (or
+ * while this bot was paused). Advances and persists `lastSeenPostId` so each
+ * missed message reaches each bot at most once. No-op in a single-bot channel.
+ *
+ * Shared by BOTH the active-follow-up path (sendFollowUp) and the resume-from-
+ * pause path (resumePausedSession) — the latter previously skipped the delta
+ * entirely, so a bot resumed by an elliptical reply ("kannst du?") never saw
+ * the exchange it referred to and answered the wrong thing.
+ */
+export async function prependMissedDelta(
+  session: Session,
+  ctx: SessionContext,
+  message: string,
+  triggeringPostId: string | undefined,
+): Promise<string> {
+  if (ctx.ops.getPeerBotNames(session.platformId).length === 0) return message;
+  try {
+    const history = await session.platform.getThreadHistory(session.threadId, {
+      limit: DELTA_MSG_CAP + 5,
+      excludeBotMessages: false,
+    });
+    const delta = computeMissedDelta(
+      history,
+      session.lastSeenPostId,
+      session.platform.getBotName(),
+      triggeringPostId,
+    );
+    let out = message;
+    if (delta.length > 0) {
+      const deltaAttachments = await resolveDeltaAttachments(session, delta);
+      out = formatMissedMessagesForClaude(delta, deltaAttachments) + '\n' + message;
+    }
+    if (history.length > 0) {
+      session.lastSeenPostId = history[history.length - 1].id;
+      ctx.ops.persistSession(session);
+    }
+    return out;
+  } catch (err) {
+    sessionLog(session).warn(
+      `delta-context.failed: ${err instanceof Error ? err.message : String(err)}`
+    );
+    return message;
+  }
+}
+
+/**
  * Helper to find a persisted session by raw threadId.
  * Persisted sessions are keyed by composite sessionId, so we need to iterate.
  */
@@ -1816,36 +1863,8 @@ export async function sendFollowUp(
   // Auto delta-context (multi-bot handoff): catch this bot up on the messages it
   // MISSED while another bot held the baton — the gate in message-handler
   // dropped those, so this bot's agent never saw them. No-op in a single-bot
-  // channel and when the bot stayed active (delta is empty). Advances the
-  // last-seen marker to the newest thread post so the same messages are never
-  // re-sent on a later handoff (token-efficient: each message reaches each bot
-  // at most once).
-  if (ctx.ops.getPeerBotNames(session.platformId).length > 0) {
-    try {
-      const history = await session.platform.getThreadHistory(session.threadId, {
-        limit: DELTA_MSG_CAP + 5,
-        excludeBotMessages: false,
-      });
-      const delta = computeMissedDelta(
-        history,
-        session.lastSeenPostId,
-        session.platform.getBotName(),
-        options?.triggeringPostId
-      );
-      if (delta.length > 0) {
-        const deltaAttachments = await resolveDeltaAttachments(session, delta);
-        messageToSend = formatMissedMessagesForClaude(delta, deltaAttachments) + '\n' + messageToSend;
-      }
-      if (history.length > 0) {
-        session.lastSeenPostId = history[history.length - 1].id;
-        ctx.ops.persistSession(session);
-      }
-    } catch (err) {
-      sessionLog(session).warn(
-        `delta-context.failed: ${err instanceof Error ? err.message : String(err)}`
-      );
-    }
-  }
+  // channel and when the bot stayed active (delta is empty).
+  messageToSend = await prependMissedDelta(session, ctx, messageToSend, options?.triggeringPostId);
 
   // Increment message counter
   session.messageCount++;
@@ -1862,7 +1881,8 @@ export async function resumePausedSession(
   files: PlatformFile[] | undefined,
   ctx: SessionContext,
   username: string,
-  platformId?: string
+  platformId?: string,
+  triggeringPostId?: string
 ): Promise<void> {
   // Find persisted session by raw threadId, scoped to the requesting bot's
   // platform — in a shared channel every bot persists its own session for the
@@ -1903,9 +1923,13 @@ export async function resumePausedSession(
   // saw its message.
   const session = mutableSessions(ctx).get(`${state.platformId}:${state.threadId}`);
   if (session && session.claude.isRunning() && session.messageManager) {
+    // Catch the resumed bot up on what it missed while paused (multi-bot). This
+    // path used to deliver the bare message with no context, so a bot resumed
+    // by an elliptical reply ("kannst du?") answered the wrong thing.
+    const toSend = await prependMissedDelta(session, ctx, message, triggeringPostId);
     // Increment message counter and delegate to MessageManager
     session.messageCount++;
-    await session.messageManager.handleUserMessage(message, files, state.startedBy);
+    await session.messageManager.handleUserMessage(toSend, files, state.startedBy);
   } else {
     log.warn(`Failed to resume session ${shortId}..., could not send message`);
   }

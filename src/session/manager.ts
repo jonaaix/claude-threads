@@ -1483,8 +1483,8 @@ export class SessionManager extends EventEmitter {
     return this.registry.getPersistedByThreadId(threadId) !== undefined;
   }
 
-  async resumePausedSession(threadId: string, message: string, files: PlatformFile[] | undefined, username: string, platformId?: string): Promise<void> {
-    await lifecycle.resumePausedSession(threadId, message, files, this.getContext(), username, platformId);
+  async resumePausedSession(threadId: string, message: string, files: PlatformFile[] | undefined, username: string, platformId?: string, triggeringPostId?: string): Promise<void> {
+    await lifecycle.resumePausedSession(threadId, message, files, this.getContext(), username, platformId, triggeringPostId);
   }
 
   getPersistedSession(threadId: string, platformId?: string): PersistedSession | undefined {

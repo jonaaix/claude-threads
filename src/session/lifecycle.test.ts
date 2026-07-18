@@ -1337,6 +1337,67 @@ describe('authorization gate at sinks (#388)', () => {
     });
   });
 
+  describe('prependMissedDelta (multi-bot catch-up)', () => {
+    const msg = (id: string, username: string, message: string) =>
+      ({ id, userId: username, username, message, createAt: 0 });
+
+    function sessionWithHistory(history: Array<{ id: string; username: string; message: string }>, lastSeen?: string) {
+      const platform = createMockPlatform({
+        getBotName: mock(() => 'jg-bot-1') as any,
+        getThreadHistory: mock(() => Promise.resolve(history)) as any,
+      });
+      const session = createMockSession({ platform, lastSeenPostId: lastSeen } as any);
+      return session;
+    }
+
+    it('prepends the messages missed since lastSeenPostId, excluding the triggering post', async () => {
+      // Regression: the resume-from-pause path delivered the bare message with
+      // no catch-up, so a bot resumed by an elliptical reply ("kannst du?")
+      // never saw the exchange it referred to.
+      const history = [
+        msg('p1', 'jonas', 'earlier, already seen'),
+        msg('p2', 'jonas', 'magst du den Screenshot posten?'),
+        msg('p3', 'jg-bot-2', 'ich kann das send_file-Tool hier nicht nutzen'),
+        msg('p4', 'jonas', 'kannst du?'), // the triggering post
+      ];
+      const session = sessionWithHistory(history, 'p1');
+      const ctx = createMockSessionContext(new Map());
+      (ctx.ops.getPeerBotNames as any).mockReturnValue(['jg-bot-2']);
+
+      const out = await lifecycle.prependMissedDelta(session, ctx, 'kannst du?', 'p4');
+
+      expect(out).toContain('magst du den Screenshot posten?');
+      expect(out).toContain('ich kann das send_file-Tool hier nicht nutzen');
+      expect(out).not.toContain('earlier, already seen'); // before lastSeen
+      expect(out.endsWith('kannst du?')).toBe(true);
+      // Advances the marker to the newest post so it isn't re-sent next time.
+      expect(session.lastSeenPostId).toBe('p4');
+      expect(ctx.ops.persistSession).toHaveBeenCalled();
+    });
+
+    it('is a no-op in a single-bot channel (no peers)', async () => {
+      const session = sessionWithHistory([msg('p2', 'jonas', 'x')], 'p1');
+      const ctx = createMockSessionContext(new Map());
+      (ctx.ops.getPeerBotNames as any).mockReturnValue([]);
+
+      const out = await lifecycle.prependMissedDelta(session, ctx, 'do it', 'p2');
+
+      expect(out).toBe('do it');
+      expect(session.platform.getThreadHistory).not.toHaveBeenCalled();
+    });
+
+    it('returns the message unchanged when nothing was missed', async () => {
+      const history = [msg('p1', 'jonas', 'seen')];
+      const session = sessionWithHistory(history, 'p1');
+      const ctx = createMockSessionContext(new Map());
+      (ctx.ops.getPeerBotNames as any).mockReturnValue(['jg-bot-2']);
+
+      const out = await lifecycle.prependMissedDelta(session, ctx, 'go', 'p1');
+
+      expect(out).toBe('go');
+    });
+  });
+
   describe('resumePausedSession', () => {
     function persistedState(overrides?: Record<string, unknown>) {
       return {
