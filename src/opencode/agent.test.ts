@@ -12,6 +12,7 @@ import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import type { Event } from '@opencode-ai/sdk';
 import { OpencodeAgent, parseOpencodeModel } from './agent.js';
 import { opencodeServer } from './server.js';
+import { opencodeMcpHost } from '../mcp/opencode-mcp-host.js';
 
 // A completed opencode text part → should translate to one assistant event.
 const completedText = (text: string): Event =>
@@ -32,6 +33,10 @@ interface Stub {
   promptCalls: unknown[];
   abortCalls: unknown[];
   permissionReplies: Array<{ permissionID: string; response: string }>;
+  mcpAdds: Array<{ name: string; url: string }>;
+  mcpDisconnects: string[];
+  hostRegistered: number;
+  hostUnregistered: string[];
   client: unknown;
 }
 
@@ -45,6 +50,10 @@ beforeEach(() => {
     promptCalls: [],
     abortCalls: [],
     permissionReplies: [],
+    mcpAdds: [],
+    mcpDisconnects: [],
+    hostRegistered: 0,
+    hostUnregistered: [],
     client: null,
   };
   stub.client = {
@@ -63,7 +72,23 @@ beforeEach(() => {
       stub.permissionReplies.push({ permissionID: opts.path.permissionID, response: opts.body.response });
       return { data: true };
     }),
+    mcp: {
+      add: mock(async (opts: { body: { name: string; config: { url: string } } }) => {
+        stub.mcpAdds.push({ name: opts.body.name, url: opts.body.config.url });
+        return { data: {} };
+      }),
+      disconnect: mock(async (opts: { path: { name: string } }) => {
+        stub.mcpDisconnects.push(opts.path.name);
+        return { data: {} };
+      }),
+    },
   };
+
+  // Shadow the in-process MCP host so tests don't start a real HTTP server.
+  (opencodeMcpHost as unknown as { registerSession: (s: unknown) => Promise<{ url: string; token: string }> }).registerSession =
+    async () => { stub.hostRegistered += 1; return { url: 'http://127.0.0.1:9/mcp/tok', token: 'tok' }; };
+  (opencodeMcpHost as unknown as { unregisterSession: (t: string) => void }).unregisterSession =
+    (t: string) => { stub.hostUnregistered.push(t); };
 
   // Shadow the singleton's methods/getter (own props over prototype). The agent
   // no longer registers with a shared hub — it opens its OWN per-session stream;
@@ -93,6 +118,8 @@ afterEach(() => {
   delete (opencodeServer as unknown as Record<string, unknown>).ensureStarted;
   delete (opencodeServer as unknown as Record<string, unknown>).openStream;
   delete (opencodeServer as unknown as Record<string, unknown>).client;
+  delete (opencodeMcpHost as unknown as Record<string, unknown>).registerSession;
+  delete (opencodeMcpHost as unknown as Record<string, unknown>).unregisterSession;
 });
 
 /** Access the private readiness promise so tests can await init. */
@@ -229,6 +256,40 @@ describe('OpencodeAgent', () => {
     await new Promise((r) => setTimeout(r, 0));
 
     expect(stub.permissionReplies).toEqual([{ permissionID: 'perm-legacy', response: 'reject' }]);
+  });
+
+  it('registers the in-process MCP tools on start and tears them down on kill', async () => {
+    const agent = new OpencodeAgent({
+      workingDir: '/repo',
+      mcp: {
+        platform: { type: 'mattermost', url: 'https://mm', token: 't', channelId: 'c', allowedUsers: [] },
+        threadId: 'thread-1',
+        allowedRoots: ['/repo'],
+        outboundEnabled: true,
+        maxBytes: 0,
+      },
+    });
+    agent.start();
+    await ready(agent);
+
+    // Registered with the host + told opencode about the remote MCP.
+    expect(stub.hostRegistered).toBe(1);
+    expect(stub.mcpAdds).toEqual([{ name: 'claude-threads-oc-1', url: 'http://127.0.0.1:9/mcp/tok' }]);
+
+    await agent.kill();
+
+    // Teardown disconnects the opencode registration and drops the host entry.
+    expect(stub.mcpDisconnects).toEqual(['claude-threads-oc-1']);
+    expect(stub.hostUnregistered).toEqual(['tok']);
+  });
+
+  it('does not register MCP tools when no mcp option is given', async () => {
+    const agent = new OpencodeAgent({ workingDir: '/repo' });
+    agent.start();
+    await ready(agent);
+
+    expect(stub.hostRegistered).toBe(0);
+    expect(stub.mcpAdds).toEqual([]);
   });
 
   it('aborts the session and emits exit once on kill', async () => {

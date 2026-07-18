@@ -23,7 +23,7 @@ import type { PlatformClient, PlatformFile, ThreadMessage } from '../platform/in
 import type { ClaudeCliOptions, ClaudeEvent, RateLimitHit } from '../claude/cli.js';
 import { ClaudeCli } from '../claude/cli.js';
 import type { AgentBackend } from '../agent/backend.js';
-import { OpencodeAgent, parseOpencodeModel } from '../opencode/agent.js';
+import { OpencodeAgent, parseOpencodeModel, type OpencodeAgentOptions } from '../opencode/agent.js';
 import { cooldownDeadline } from '../claude/rate-limit-detector.js';
 import type { PersistedSession } from '../persistence/session-store.js';
 import { createThreadLogger } from '../persistence/thread-logger.js';
@@ -302,6 +302,42 @@ export function handleRateLimit(session: Session, hit: RateLimitHit, ctx: Sessio
 function writeScopeDirsFor(ctx: SessionContext, platformId: string, workingDir: string): string[] | undefined {
   if (ctx.ops.getPlatformWriteScope(platformId) !== 'workingDir') return undefined;
   return [workingDir, tmpdir()];
+}
+
+/**
+ * Build the in-process MCP wiring for an opencode session: send_file/read_post
+ * scoped to this bot's platform + thread + working dir. Mirrors the env the
+ * Claude backend's stdio MCP child gets (allowedRoots = workingDir + uploadDir;
+ * outbound toggle/cap from platform config). See `opencode-mcp-host.ts`.
+ */
+function opencodeMcpOptionsFor(
+  platformMcpConfig: ReturnType<PlatformClient['getMcpConfig']>,
+  workingDir: string,
+  uploadDir: string,
+  threadId: string,
+): OpencodeAgentOptions['mcp'] {
+  const cfg = platformMcpConfig as {
+    type: string; url?: string; token?: string; channelId?: string; allowedUsers?: string[];
+    appToken?: string; botToken?: string;
+    outboundFiles?: { enabled?: boolean; maxBytes?: number };
+  };
+  return {
+    platform: {
+      type: cfg.type,
+      url: cfg.url ?? '',
+      // Slack carries the bot token as `botToken`; Mattermost as `token`.
+      token: cfg.token ?? cfg.botToken ?? '',
+      channelId: cfg.channelId ?? '',
+      allowedUsers: cfg.allowedUsers ?? [],
+      appToken: cfg.appToken,
+    },
+    threadId,
+    allowedRoots: [workingDir, uploadDir].filter((p) => p.length > 0),
+    outboundEnabled: cfg.outboundFiles?.enabled !== false,
+    maxBytes: typeof cfg.outboundFiles?.maxBytes === 'number' && cfg.outboundFiles.maxBytes > 0
+      ? cfg.outboundFiles.maxBytes
+      : 0,
+  };
 }
 
 /**
@@ -1223,6 +1259,12 @@ export async function startSession(
         // → opencode uses its own default from opencode.json.
         model: parseOpencodeModel(ctx.ops.getPlatformModel(platformId)),
         writeScopeDirs: writeScopeDirsFor(ctx, platformId, workingDir),
+        mcp: opencodeMcpOptionsFor(
+          platformMcpConfig,
+          workingDir,
+          getSessionUploadDir(platformId, actualThreadId),
+          actualThreadId,
+        ),
       })
     : new ClaudeCli(cliOptions);
 
@@ -1567,6 +1609,12 @@ export async function resumeSession(
         title: state.sessionTitle ?? 'claude-threads session',
         model: parseOpencodeModel(ctx.ops.getPlatformModel(state.platformId)),
         writeScopeDirs: writeScopeDirsFor(ctx, state.platformId, state.workingDir),
+        mcp: opencodeMcpOptionsFor(
+          platformMcpConfig,
+          state.workingDir,
+          getSessionUploadDir(state.platformId, state.threadId),
+          state.threadId,
+        ),
       })
     : new ClaudeCli(cliOptions);
 

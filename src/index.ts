@@ -22,6 +22,7 @@ import { runOnboarding } from './onboarding.js';
 import { MattermostClient, SlackClient, type PlatformClient, type PlatformPost, type PlatformUser } from './platform/index.js';
 import { SessionManager } from './session/index.js';
 import { opencodeServer } from './opencode/server.js';
+import { opencodeMcpHost } from './mcp/opencode-mcp-host.js';
 import { SessionStore } from './persistence/session-store.js';
 import { checkForUpdates } from './update-notifier.js';
 import { VERSION } from './version.js';
@@ -849,6 +850,10 @@ async function startWithoutDaemon() {
     // Shut down the shared opencode server (if one was started for any
     // opencode-backed session). No-op when no opencode session ever ran.
     await opencodeServer.shutdown();
+
+    // Shut down the in-process MCP host (send_file/read_post for opencode
+    // bots). No-op when never started.
+    await opencodeMcpHost.shutdown();
 
     // Stop auto-update manager
     autoUpdateManager?.stop();

@@ -338,7 +338,7 @@ const permissionInputSchema = {
   input: z.record(z.string(), z.unknown()).describe('Tool input parameters'),
 };
 
-const sendFileInputSchema = {
+export const sendFileInputSchema = {
   path: z
     .string()
     .describe(

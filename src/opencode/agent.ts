@@ -28,6 +28,7 @@ import { OpencodeEventTranslator } from './event-translator.js';
 import { opencodeServer } from './server.js';
 import type { OpencodeSessionStream } from './event-stream.js';
 import { evaluateWriteScope, ensureAskPermissionConfig } from './write-scope.js';
+import { opencodeMcpHost, type OpencodeMcpPlatformConfig } from '../mcp/opencode-mcp-host.js';
 import { createLogger } from '../utils/logger.js';
 
 /** A concrete opencode model selection, as the SDK's prompt body expects it. */
@@ -83,6 +84,22 @@ export interface OpencodeAgentOptions {
    * them — see `write-scope.ts`.
    */
   writeScopeDirs?: string[];
+  /**
+   * Wiring for the in-process claude-threads MCP tools (send_file, read_post).
+   * When set, the agent registers a per-session remote MCP with opencode
+   * pointing at the bridge's in-process host, so the bot can post files and
+   * read permalinks — the same tools the Claude backend gets via its stdio MCP
+   * child, but with zero extra processes. Undefined → no MCP tools (older
+   * behavior). See `opencode-mcp-host.ts`.
+   */
+  mcp?: {
+    platform: OpencodeMcpPlatformConfig;
+    /** Platform thread root that `send_file` posts into. */
+    threadId: string;
+    allowedRoots: string[];
+    outboundEnabled: boolean;
+    maxBytes: number;
+  };
 }
 
 export class OpencodeAgent extends EventEmitter implements AgentBackend {
@@ -96,6 +113,8 @@ export class OpencodeAgent extends EventEmitter implements AgentBackend {
   private ready: Promise<void> | null = null;
   private alive = false;
   private exited = false;
+  /** Name + token of this session's registered in-process MCP, for teardown. */
+  private mcpRegistration: { name: string; token: string } | null = null;
   private failureReason: string | null = null;
 
   constructor(private readonly options: OpencodeAgentOptions) {
@@ -175,6 +194,57 @@ export class OpencodeAgent extends EventEmitter implements AgentBackend {
       this.log,
     );
     await this.stream.start();
+
+    await this.registerMcpTools(client);
+  }
+
+  /**
+   * Give this session the claude-threads MCP tools (send_file, read_post) by
+   * registering the bridge's in-process host as a per-session REMOTE MCP with
+   * opencode. Best-effort: a failure here only costs the tools, never the
+   * session. Torn down in kill().
+   */
+  private async registerMcpTools(client: NonNullable<typeof opencodeServer.client>): Promise<void> {
+    if (!this.options.mcp || !this.sessionId) return;
+    try {
+      const { url, token } = await opencodeMcpHost.registerSession({
+        platform: this.options.mcp.platform,
+        threadId: this.options.mcp.threadId,
+        allowedRoots: this.options.mcp.allowedRoots,
+        outboundEnabled: this.options.mcp.outboundEnabled,
+        maxBytes: this.options.mcp.maxBytes,
+      });
+      const name = `claude-threads-${this.sessionId}`;
+      const { error } = await client.mcp.add({
+        body: { name, config: { type: 'remote', url, enabled: true } },
+        query: { directory: this.options.workingDir },
+      });
+      if (error) {
+        opencodeMcpHost.unregisterSession(token);
+        this.log.warn(`MCP tools registration failed: ${JSON.stringify(error)}`);
+        return;
+      }
+      this.mcpRegistration = { name, token };
+      this.log.debug(`registered in-process MCP tools as ${name}`);
+    } catch (err) {
+      this.log.warn(`MCP tools registration error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /** Tear down this session's MCP registration (disconnect + drop host entry). */
+  private async teardownMcpTools(): Promise<void> {
+    const reg = this.mcpRegistration;
+    if (!reg) return;
+    this.mcpRegistration = null;
+    try {
+      await opencodeServer.client?.mcp.disconnect({
+        path: { name: reg.name },
+        query: { directory: this.options.workingDir },
+      });
+    } catch (err) {
+      this.log.debug(`MCP disconnect failed (ignored): ${err}`);
+    }
+    opencodeMcpHost.unregisterSession(reg.token);
   }
 
   private onOpencodeEvent(event: Event): void {
@@ -290,6 +360,10 @@ export class OpencodeAgent extends EventEmitter implements AgentBackend {
     this.alive = false;
     this.stream?.stop();
     this.stream = null;
+    // Disconnect the MCP registration first (runs on !stop, !pause, timeout,
+    // shutdown) so a paused/ended session never leaves its tools visible to a
+    // sibling session of the same bot.
+    await this.teardownMcpTools();
     if (this.sessionId) {
       const client = opencodeServer.client;
       try {
