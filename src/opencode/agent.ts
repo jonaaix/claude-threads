@@ -99,6 +99,10 @@ export interface OpencodeAgentOptions {
     allowedRoots: string[];
     outboundEnabled: boolean;
     maxBytes: number;
+    /** Session owner (send_dm attribution). */
+    sessionOwnerUsername: string;
+    /** Timeout for send_dm's per-recipient permission prompt. */
+    promptTimeoutMs: number;
   };
 }
 
@@ -213,6 +217,8 @@ export class OpencodeAgent extends EventEmitter implements AgentBackend {
         allowedRoots: this.options.mcp.allowedRoots,
         outboundEnabled: this.options.mcp.outboundEnabled,
         maxBytes: this.options.mcp.maxBytes,
+        sessionOwnerUsername: this.options.mcp.sessionOwnerUsername,
+        promptTimeoutMs: this.options.mcp.promptTimeoutMs,
       });
       const name = `claude-threads-${this.sessionId}`;
       const { error } = await client.mcp.add({

@@ -26,16 +26,21 @@ describe('OpencodeMcpHost', () => {
   let host: OpencodeMcpHost;
   afterEach(async () => { await host?.shutdown(); });
 
-  it('exposes send_file + read_post and NOT permission_prompt', async () => {
+  it('exposes the full Claude tool set (minus permission_prompt)', async () => {
     host = new OpencodeMcpHost();
     const { url } = await host.registerSession({
-      platform, threadId: 't1', allowedRoots: ['/tmp'], outboundEnabled: true, maxBytes: 0,
+      platform, threadId: 't1', allowedRoots: ['/tmp'], outboundEnabled: true, maxBytes: 0, sessionOwnerUsername: "alice", promptTimeoutMs: 1000,
     });
     const client = await connect(url);
     const names = (await client.listTools()).tools.map((t) => t.name).sort();
     await client.close();
 
-    expect(names).toEqual(['read_post', 'send_file']);
+    // Parity with the Claude stdio server (which additionally has
+    // permission_prompt — Claude-only, opencode handles permissions itself).
+    expect(names).toEqual([
+      'list_thread', 'react_to_post', 'read_channel_history', 'read_post',
+      'search_messages', 'send_dm', 'send_file', 'update_own_post',
+    ]);
     expect(names).not.toContain('permission_prompt');
   });
 
@@ -50,7 +55,7 @@ describe('OpencodeMcpHost', () => {
     await writeFile(file, 'PNGDATA');
 
     const { url, token } = await host.registerSession({
-      platform, threadId: 'thread-xyz', allowedRoots: [dir], outboundEnabled: true, maxBytes: 0,
+      platform, threadId: 'thread-xyz', allowedRoots: [dir], outboundEnabled: true, maxBytes: 0, sessionOwnerUsername: "alice", promptTimeoutMs: 1000,
     });
     // Replace the api with a fake (the real one would hit the network).
     (host as unknown as { sessions: Map<string, { api: unknown }> }).sessions.get(token)!.api = {
@@ -70,7 +75,7 @@ describe('OpencodeMcpHost', () => {
   it('send_file rejects a path outside the allowed roots', async () => {
     host = new OpencodeMcpHost();
     const { url, token } = await host.registerSession({
-      platform, threadId: 't1', allowedRoots: ['/allowed/only'], outboundEnabled: true, maxBytes: 0,
+      platform, threadId: 't1', allowedRoots: ['/allowed/only'], outboundEnabled: true, maxBytes: 0, sessionOwnerUsername: "alice", promptTimeoutMs: 1000,
     });
     (host as unknown as { sessions: Map<string, { api: unknown }> }).sessions.get(token)!.api = {
       uploadFile: async () => { throw new Error('should not be called'); },
@@ -94,8 +99,8 @@ describe('OpencodeMcpHost', () => {
       uploadFile: async (_p: string, threadId: string) => { bucket.push({ threadId }); return { postId: 'p' }; },
     });
 
-    const a = await host.registerSession({ platform, threadId: 'thread-A', allowedRoots: [dir], outboundEnabled: true, maxBytes: 0 });
-    const b = await host.registerSession({ platform, threadId: 'thread-B', allowedRoots: [dir], outboundEnabled: true, maxBytes: 0 });
+    const a = await host.registerSession({ platform, threadId: 'thread-A', allowedRoots: [dir], outboundEnabled: true, maxBytes: 0, sessionOwnerUsername: "alice", promptTimeoutMs: 1000 });
+    const b = await host.registerSession({ platform, threadId: 'thread-B', allowedRoots: [dir], outboundEnabled: true, maxBytes: 0, sessionOwnerUsername: "alice", promptTimeoutMs: 1000 });
     const sessions = (host as unknown as { sessions: Map<string, { api: unknown }> }).sessions;
     sessions.get(a.token)!.api = fakeApi(seen) as never;
     sessions.get(b.token)!.api = fakeApi(seen) as never;
@@ -113,7 +118,7 @@ describe('OpencodeMcpHost', () => {
   it('unregisterSession makes the token stop initializing new clients', async () => {
     host = new OpencodeMcpHost();
     const { url, token } = await host.registerSession({
-      platform, threadId: 't1', allowedRoots: ['/tmp'], outboundEnabled: true, maxBytes: 0,
+      platform, threadId: 't1', allowedRoots: ['/tmp'], outboundEnabled: true, maxBytes: 0, sessionOwnerUsername: "alice", promptTimeoutMs: 1000,
     });
     host.unregisterSession(token);
 

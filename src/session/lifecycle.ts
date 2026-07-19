@@ -315,6 +315,8 @@ function opencodeMcpOptionsFor(
   workingDir: string,
   uploadDir: string,
   threadId: string,
+  sessionOwnerUsername: string,
+  promptTimeoutMs: number,
 ): OpencodeAgentOptions['mcp'] {
   const cfg = platformMcpConfig as {
     type: string; url?: string; token?: string; channelId?: string; allowedUsers?: string[];
@@ -337,6 +339,8 @@ function opencodeMcpOptionsFor(
     maxBytes: typeof cfg.outboundFiles?.maxBytes === 'number' && cfg.outboundFiles.maxBytes > 0
       ? cfg.outboundFiles.maxBytes
       : 0,
+    sessionOwnerUsername,
+    promptTimeoutMs,
   };
 }
 
@@ -1244,6 +1248,8 @@ export async function startSession(
           workingDir,
           getSessionUploadDir(platformId, actualThreadId),
           actualThreadId,
+          username,
+          ctx.config.permissionTimeoutMs ?? 120_000,
         ),
       })
     : new ClaudeCli(cliOptions);
@@ -1594,6 +1600,8 @@ export async function resumeSession(
           state.workingDir,
           getSessionUploadDir(state.platformId, state.threadId),
           state.threadId,
+          state.startedBy,
+          ctx.config.permissionTimeoutMs ?? 120_000,
         ),
       })
     : new ClaudeCli(cliOptions);

@@ -267,6 +267,8 @@ describe('OpencodeAgent', () => {
         allowedRoots: ['/repo'],
         outboundEnabled: true,
         maxBytes: 0,
+        sessionOwnerUsername: 'alice',
+        promptTimeoutMs: 1000,
       },
     });
     agent.start();
