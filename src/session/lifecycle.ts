@@ -413,26 +413,6 @@ export async function prependMissedDelta(
 }
 
 /**
- * Helper to find a persisted session by raw threadId.
- * Persisted sessions are keyed by composite sessionId, so we need to iterate.
- */
-function findPersistedByThreadId(
-  persisted: Map<string, PersistedSession>,
-  threadId: string,
-  platformId?: string
-): PersistedSession | undefined {
-  // Multi-bot channels persist one session PER BOT for the same threadId —
-  // scope by platformId whenever acting for one specific bot, or the lookup
-  // returns an arbitrary peer's session.
-  for (const session of persisted.values()) {
-    if (session.threadId === threadId && (!platformId || session.platformId === platformId)) {
-      return session;
-    }
-  }
-  return undefined;
-}
-
-/**
  * Create a MessageManager for a session.
  * Handles all content, task list, question, and subagent operations.
  *
@@ -1932,11 +1912,15 @@ export async function resumePausedSession(
   platformId?: string,
   triggeringPostId?: string
 ): Promise<void> {
-  // Find persisted session by raw threadId, scoped to the requesting bot's
-  // platform — in a shared channel every bot persists its own session for the
-  // same thread, and resuming a PEER's would answer as the wrong bot.
-  const persisted = ctx.state.sessionStore.load();
-  const state = findPersistedByThreadId(persisted, threadId, platformId);
+  // Look up the persisted session in RAW state (including soft-deleted, i.e.
+  // cleanedAt set) — the same source the 🔄-reaction path (findByPostId) and
+  // the message-handler's paused-session gate (getPersistedByThreadId) use.
+  // Using load() here (which drops soft-deleted sessions) was the bug: a timed-
+  // out session gets a cleanedAt on cleanup, so after a restart the reaction
+  // resumed it but a plain message silently no-op'd — the gate said "paused
+  // session exists" (raw) yet this lookup found nothing. Scoped to the bot's
+  // platform so a shared-channel message never resumes a PEER's session.
+  const state = ctx.state.sessionStore.findByThreadIdAnyState(threadId, platformId);
   if (!state) {
     log.debug(`No persisted session found for ${threadId.substring(0, 8)}...`);
     return;

@@ -180,6 +180,7 @@ function createMockSessionContext(sessions: Map<string, Session> = new Map()): S
         getStickyPostId: mock(() => null),
         load: mock(() => new Map()),
         findByPostId: mock(() => undefined),
+        findByThreadIdAnyState: mock(() => undefined),
       } as any,
       githubEmailsStore: {
         get: mock(() => undefined),
@@ -1424,8 +1425,15 @@ describe('authorization gate at sinks (#388)', () => {
       });
       const ctx = createMockSessionContext(new Map());
       (ctx.state.platforms as Map<string, PlatformClient>).set('test-platform', platform);
+      // Model the real store: load() DROPS soft-deleted (cleanedAt) sessions,
+      // findByThreadIdAnyState returns them (raw). resumePausedSession must use
+      // the raw lookup so a timed-out (cleanedAt) session still resumes.
       (ctx.state.sessionStore.load as any).mockReturnValue(
-        new Map([['test-platform:thread-paused', state]]),
+        state.cleanedAt ? new Map() : new Map([['test-platform:thread-paused', state]]),
+      );
+      (ctx.state.sessionStore.findByThreadIdAnyState as any).mockImplementation(
+        (threadId: string, platformId?: string) =>
+          threadId === state.threadId && (!platformId || platformId === state.platformId) ? state : undefined,
       );
       return ctx;
     }
@@ -1456,6 +1464,29 @@ describe('authorization gate at sinks (#388)', () => {
       await lifecycle.resumePausedSession('thread-paused', 'continue', undefined, ctx, 'invited');
 
       expect(ctx.ops.acquireClaudeAccount).toHaveBeenCalled();
+    });
+
+    it('resumes a SOFT-DELETED (timed-out, cleanedAt) session — the message-resume regression', async () => {
+      // A timed-out session gets a cleanedAt on cleanup; load() drops it, so
+      // resuming via a message used to silently no-op after a restart while the
+      // 🔄 reaction (raw lookup) still worked. resumePausedSession must find it
+      // via the raw lookup like the reaction path does.
+      const ctx = contextWithPersisted(
+        persistedState({ cleanedAt: '2026-07-18T20:29:51.520Z', isPaused: true }),
+      );
+
+      await lifecycle.resumePausedSession('thread-paused', 'continue', undefined, ctx, 'alice', 'test-platform');
+
+      expect(ctx.ops.acquireClaudeAccount).toHaveBeenCalled();
+    });
+
+    it('does not resume a PEER platform\'s session for the same thread', async () => {
+      const ctx = contextWithPersisted(persistedState());
+
+      // A message on a different platform must not resume this platform's session.
+      await lifecycle.resumePausedSession('thread-paused', 'continue', undefined, ctx, 'alice', 'other-platform');
+
+      expect(ctx.ops.acquireClaudeAccount).not.toHaveBeenCalled();
     });
   });
 });
