@@ -2,7 +2,7 @@ import { describe, it, expect } from 'bun:test';
 import { mkdtempSync, readFileSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { evaluateWriteScope, extractAbsolutePaths, isInsideDir, ensureAskPermissionConfig } from './write-scope.js';
+import { evaluateWriteScope, extractAbsolutePaths, isInsideDir, ensurePermissionConfig } from './write-scope.js';
 
 const SCOPE = ['/ai-agent-ux', '/tmp'];
 
@@ -78,11 +78,22 @@ describe('evaluateWriteScope', () => {
   });
 });
 
-describe('ensureAskPermissionConfig', () => {
-  it('creates opencode.json with edit/bash = ask when missing', () => {
+describe('ensurePermissionConfig', () => {
+  it('creates opencode.json with edit/bash = allow (unrestricted default)', () => {
+    // Regression: without any config, a bot on opencode 1.18 couldn't write to
+    // its own working dir. The default must pin edit/bash to "allow".
     const dir = mkdtempSync(join(tmpdir(), 'ws-'));
 
-    expect(ensureAskPermissionConfig(dir)).toBe('created');
+    expect(ensurePermissionConfig(dir, 'allow')).toBe('created');
+
+    const config = JSON.parse(readFileSync(join(dir, 'opencode.json'), 'utf8'));
+    expect(config.permission).toEqual({ edit: 'allow', bash: 'allow' });
+  });
+
+  it('creates opencode.json with edit/bash = ask (writeScope mode)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ws-'));
+
+    expect(ensurePermissionConfig(dir, 'ask')).toBe('created');
 
     const config = JSON.parse(readFileSync(join(dir, 'opencode.json'), 'utf8'));
     expect(config.permission).toEqual({ edit: 'ask', bash: 'ask' });
@@ -90,28 +101,28 @@ describe('ensureAskPermissionConfig', () => {
 
   it('merges non-destructively: adds only missing keys, keeps everything else', () => {
     const dir = mkdtempSync(join(tmpdir(), 'ws-'));
-    writeFileSync(join(dir, 'opencode.json'), JSON.stringify({ model: 'openrouter/x', permission: { edit: 'allow' } }));
+    writeFileSync(join(dir, 'opencode.json'), JSON.stringify({ model: 'openrouter/x', permission: { edit: 'ask' } }));
 
-    expect(ensureAskPermissionConfig(dir)).toBe('updated');
+    expect(ensurePermissionConfig(dir, 'allow')).toBe('updated');
 
     const config = JSON.parse(readFileSync(join(dir, 'opencode.json'), 'utf8'));
     expect(config.model).toBe('openrouter/x');       // untouched
-    expect(config.permission.edit).toBe('allow');    // operator's explicit choice wins
-    expect(config.permission.bash).toBe('ask');      // missing key added
+    expect(config.permission.edit).toBe('ask');      // operator's explicit choice wins
+    expect(config.permission.bash).toBe('allow');    // missing key added
   });
 
   it('is a no-op when both keys are already set', () => {
     const dir = mkdtempSync(join(tmpdir(), 'ws-'));
     writeFileSync(join(dir, 'opencode.json'), JSON.stringify({ permission: { edit: 'ask', bash: 'deny' } }));
 
-    expect(ensureAskPermissionConfig(dir)).toBe('ok');
+    expect(ensurePermissionConfig(dir, 'allow')).toBe('ok');
   });
 
   it('refuses to clobber an unparseable file', () => {
     const dir = mkdtempSync(join(tmpdir(), 'ws-'));
     writeFileSync(join(dir, 'opencode.json'), '{ not json');
 
-    expect(ensureAskPermissionConfig(dir)).toBe('failed');
+    expect(ensurePermissionConfig(dir, 'allow')).toBe('failed');
     expect(readFileSync(join(dir, 'opencode.json'), 'utf8')).toBe('{ not json');
   });
 });

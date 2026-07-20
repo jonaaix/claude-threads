@@ -27,7 +27,7 @@ import type { AgentBackend } from '../agent/backend.js';
 import { OpencodeEventTranslator } from './event-translator.js';
 import { opencodeServer } from './server.js';
 import type { OpencodeSessionStream } from './event-stream.js';
-import { evaluateWriteScope, ensureAskPermissionConfig } from './write-scope.js';
+import { evaluateWriteScope, ensurePermissionConfig } from './write-scope.js';
 import { opencodeMcpHost, type OpencodeMcpPlatformConfig } from '../mcp/opencode-mcp-host.js';
 import { createLogger } from '../utils/logger.js';
 
@@ -159,17 +159,17 @@ export class OpencodeAgent extends EventEmitter implements AgentBackend {
   }
 
   private async init(): Promise<void> {
-    // Scoped bots need opencode to ASK for write/bash permissions (the bridge
-    // then answers instantly per the scope policy — the user never confirms
-    // anything). Ensure the project config says so; without it opencode never
-    // asks and the scope would silently not apply.
-    if (this.options.writeScopeDirs) {
-      const result = ensureAskPermissionConfig(this.options.workingDir);
-      if (result === 'created' || result === 'updated') {
-        this.log.info(`write-scope: ${result} ${this.options.workingDir}/opencode.json (permission.edit/bash = "ask")`);
-      } else if (result === 'failed') {
-        this.log.warn(`write-scope: could not ensure ${this.options.workingDir}/opencode.json — the scope may not be enforced`);
-      }
+    // Pin edit/bash permissions in the working dir's opencode.json. Without it
+    // an unconfigured project does not let the bot write to its own working
+    // dir. Unrestricted (no writeScope) → 'allow' so the bot just works in its
+    // own dir (the default case); writeScope → 'ask' so the bridge answers per
+    // the scope policy. Non-destructive; best-effort.
+    const permValue = this.options.writeScopeDirs ? 'ask' : 'allow';
+    const result = ensurePermissionConfig(this.options.workingDir, permValue);
+    if (result === 'created' || result === 'updated') {
+      this.log.info(`opencode.json: set permission.edit/bash = "${permValue}" in ${this.options.workingDir}`);
+    } else if (result === 'failed') {
+      this.log.warn(`could not write ${this.options.workingDir}/opencode.json — edit/bash permissions may not apply`);
     }
 
     const client = await opencodeServer.ensureStarted();

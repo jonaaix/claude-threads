@@ -118,16 +118,29 @@ export function evaluateWriteScope(
   return paths.every(inScope) ? 'allow' : 'reject';
 }
 
+/** opencode permission value for edit/bash. */
+export type PermissionValue = 'allow' | 'ask';
+
 /**
- * Ensure the working directory's `opencode.json` marks edit/bash permissions
- * `"ask"`, so opencode actually emits permission requests for the bridge to
- * evaluate — without it a write scope silently has no effect. Non-destructive:
- * only missing keys are added; existing values (and all other config) are left
- * alone. A running opencode server picks the project config up on the next
- * session (verified live). Best-effort: returns what happened for logging.
+ * Pin the working directory's `opencode.json` edit/bash permissions to a known
+ * value so the bot's write behavior does NOT depend on opencode's
+ * version-specific default (1.17 allowed edits silently; 1.18 does not — a bot
+ * with no config couldn't write to its own working dir).
+ *
+ *  - `'allow'` (unrestricted / default): opencode allows edits+bash silently,
+ *    no permission round-trips. This is what makes "no writeScope configured"
+ *    mean "the bot can freely work in its own dir", on every opencode version.
+ *  - `'ask'` (writeScope: workingDir): opencode asks, and the bridge answers
+ *    per the scope policy (in-dir → allow, outside → reject).
+ *
+ * Non-destructive: only MISSING keys are set, so an operator's explicit values
+ * (and all other config) are left alone. A running opencode server picks the
+ * project config up on the next session (verified live). Best-effort: returns
+ * what happened for logging.
  */
-export function ensureAskPermissionConfig(
+export function ensurePermissionConfig(
   workingDir: string,
+  value: PermissionValue,
 ): 'created' | 'updated' | 'ok' | 'failed' {
   const file = join(workingDir, 'opencode.json');
   try {
@@ -144,7 +157,7 @@ export function ensureAskPermissionConfig(
     let changed = false;
     for (const key of ['edit', 'bash'] as const) {
       if (permission[key] === undefined) {
-        permission[key] = 'ask';
+        permission[key] = value;
         changed = true;
       }
     }
