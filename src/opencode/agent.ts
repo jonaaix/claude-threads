@@ -159,11 +159,13 @@ export class OpencodeAgent extends EventEmitter implements AgentBackend {
   }
 
   private async init(): Promise<void> {
-    // Pin edit/bash permissions in the working dir's opencode.json. Without it
-    // an unconfigured project does not let the bot write to its own working
-    // dir. Unrestricted (no writeScope) → 'allow' so the bot just works in its
-    // own dir (the default case); writeScope → 'ask' so the bridge answers per
-    // the scope policy. Non-destructive; best-effort.
+    // Pin edit/bash permissions in the working dir's opencode.json (an
+    // unconfigured project otherwise wouldn't let the bot write at all).
+    //  - confined to the working dir (the DEFAULT, and `writeScope: workingDir`)
+    //    → 'ask', so opencode asks and the bridge approves in-dir writes and
+    //    rejects the rest.
+    //  - unrestricted (`writeScope: unrestricted`) → 'allow', write anywhere.
+    // writeScopeDirs is set for the confined case, undefined for unrestricted.
     const permValue = this.options.writeScopeDirs ? 'ask' : 'allow';
     const result = ensurePermissionConfig(this.options.workingDir, permValue);
     if (result === 'created' || result === 'updated') {

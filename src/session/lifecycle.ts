@@ -295,12 +295,16 @@ export function handleRateLimit(session: Session, hit: RateLimitHit, ctx: Sessio
 
 /**
  * The directories an opencode session may WRITE in, per the platform's
- * `writeScope` config. Undefined → unrestricted (auto-approve, historic
- * behavior). `'workingDir'` → the session's working directory plus the OS
- * temp dir (scratch space; uploads already live there).
+ * `writeScope` config. The DEFAULT is confinement to the working directory —
+ * a bot writes in its own dir and nowhere else unless told otherwise:
+ *
+ *  - unset (default) or `'workingDir'` → the session's working directory plus
+ *    the OS temp dir (scratch space; uploads already live there).
+ *  - `'unrestricted'` → undefined here, i.e. the bot may write anywhere
+ *    (opt-in, e.g. a chief bot that must touch paths outside its working dir).
  */
 function writeScopeDirsFor(ctx: SessionContext, platformId: string, workingDir: string): string[] | undefined {
-  if (ctx.ops.getPlatformWriteScope(platformId) !== 'workingDir') return undefined;
+  if (ctx.ops.getPlatformWriteScope(platformId) === 'unrestricted') return undefined;
   return [workingDir, tmpdir()];
 }
 

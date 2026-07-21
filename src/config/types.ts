@@ -33,7 +33,10 @@ export function isWorkingBlockMode(value: unknown): value is WorkingBlockMode {
   return value === 'expanded' || value === 'hidden';
 }
 
-/** Where a bot may write (opencode backend). See PlatformInstanceConfig.writeScope. */
+/**
+ * Where a bot may write (opencode backend). Default (unset) = confined to the
+ * working directory. See PlatformInstanceConfig.writeScope.
+ */
 export type WriteScopeMode = 'unrestricted' | 'workingDir';
 
 export function isWriteScopeMode(value: unknown): value is WriteScopeMode {
@@ -334,22 +337,22 @@ export interface PlatformInstanceConfig {
    */
   workingBlock?: WorkingBlockMode;
   /**
-   * Where this bot may WRITE (opencode backend only). Default `'unrestricted'`
-   * (today's behavior: every permission request is auto-approved).
+   * Where this bot may WRITE (opencode backend only). The DEFAULT is the bot's
+   * own working directory — a bot writes in its own dir and nowhere else:
    *
-   * `'workingDir'` keeps an advisory bot in its lane: the bridge approves
-   * write/edit permission requests only for paths inside the bot's own
-   * `workingDir` (plus the OS temp dir) and REJECTS everything else — so a
-   * UX-sparring bot can still write its mockups in its own directory but can
-   * no longer edit the main project.
+   * - unset (default) / `'workingDir'`: the bridge approves write/edit/bash
+   *   permission requests only for paths inside the bot's `workingDir` (plus
+   *   the OS temp dir) and REJECTS everything outside it. So an advisory bot
+   *   writes its own artifacts but can't touch the main project.
+   * - `'unrestricted'`: the bot may write anywhere (opt-in, e.g. a chief bot
+   *   whose job spans paths outside its working dir).
    *
-   * PREREQUISITE: opencode only asks when its own config says so. Put an
-   * `opencode.json` in the bot's workingDir with
-   * `{ "permission": { "edit": "ask", "bash": "ask" } }` — without it no
-   * permission events fire and this option has no effect.
+   * The bot's `opencode.json` is managed automatically: default/`workingDir`
+   * pins edit/bash to `"ask"` (the bridge then answers per this scope);
+   * `'unrestricted'` pins them to `"allow"`. Existing explicit values are kept.
    *
-   * This is a guardrail against an overeager model, not a security boundary
-   * (bash commands are checked heuristically for absolute paths / `..`).
+   * The scope is a guardrail against an overeager model, not a hard security
+   * boundary (bash commands are checked heuristically for absolute paths / `..`).
    */
   writeScope?: WriteScopeMode;
   // Platform-specific fields (TypeScript allows extra properties)
