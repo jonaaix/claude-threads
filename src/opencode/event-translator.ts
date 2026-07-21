@@ -221,8 +221,13 @@ export class OpencodeEventTranslator {
         type: 'tool_use',
         tool_use: {
           id: callID,
-          // opencode's own title is the most reliable, version-stable label.
-          name: title || prettyToolName(part.tool),
+          // For our own MCP tools, use the canonical Claude MCP name so the
+          // shared tool formatters apply (react_to_post is hidden; the rest
+          // render as "🔌 <tool> (claude-threads-mcp)") — otherwise opencode's
+          // namespaced `claude-threads-<sessionId>_<tool>` misses the registry
+          // and leaks as a raw name. Fall back to opencode's title / a
+          // title-cased tool name for everything else.
+          name: canonicalClaudeThreadsToolName(part.tool) ?? (title || prettyToolName(part.tool)),
           input: normalizeToolInput(input),
         },
       } as AgentEvent);
@@ -338,6 +343,27 @@ export class OpencodeEventTranslator {
 function prettyToolName(tool: string): string {
   if (!tool) return 'Tool';
   return tool.charAt(0).toUpperCase() + tool.slice(1);
+}
+
+/** The claude-threads MCP tools the bridge exposes (see registerClaudeThreadsTools). */
+const CLAUDE_THREADS_TOOLS = [
+  'send_file', 'read_post', 'react_to_post', 'update_own_post',
+  'list_thread', 'read_channel_history', 'search_messages', 'send_dm',
+];
+
+/**
+ * opencode namespaces MCP tools as `<serverName>_<tool>`, and the bridge's
+ * server is `claude-threads-<opencodeSessionId>` — so a call surfaces as e.g.
+ * `claude-threads-ses_08…_react_to_post`. Rewrite that to the canonical Claude
+ * name `mcp__claude-threads-mcp__<tool>` so the shared tool formatters match
+ * (hiding react_to_post, prettifying the rest). Returns null for anything
+ * that isn't one of our namespaced tools. The sessionId itself contains `_`,
+ * so match by known tool SUFFIX rather than splitting on `_`.
+ */
+function canonicalClaudeThreadsToolName(tool: string): string | null {
+  if (!tool.toLowerCase().startsWith('claude-threads-')) return null;
+  const hit = CLAUDE_THREADS_TOOLS.find((t) => tool.endsWith(`_${t}`));
+  return hit ? `mcp__claude-threads-mcp__${hit}` : null;
 }
 
 /**

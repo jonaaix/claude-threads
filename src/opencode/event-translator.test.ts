@@ -181,6 +181,29 @@ describe('OpencodeEventTranslator', () => {
     expect(toolUse(out[0]).name).toBe('Bash');
   });
 
+  it('rewrites our namespaced MCP tools to the canonical Claude name (so the formatters match)', () => {
+    // opencode surfaces `claude-threads-<sessionId>_<tool>` (sessionId itself
+    // contains `_`); the shared formatters key on mcp__claude-threads-mcp__*.
+    // Without the rewrite, react_to_post isn't hidden and the raw namespaced
+    // name leaks into the working block.
+    const react = t.translate(
+      toolPart('c1', 'claude-threads-ses_080050226ffe0dJgtou8yz_react_to_post', { status: 'running', input: {}, time: { start: 0 } }),
+    );
+    expect(toolUse(react[0]).name).toBe('mcp__claude-threads-mcp__react_to_post');
+
+    const send = t.translate(
+      toolPart('c2', 'claude-threads-ses_080050226ffe0dJgtou8yz_send_file', { status: 'running', input: {}, time: { start: 0 } }),
+    );
+    expect(toolUse(send[0]).name).toBe('mcp__claude-threads-mcp__send_file');
+  });
+
+  it('leaves non-claude-threads tool names untouched', () => {
+    const out = t.translate(
+      toolPart('c1', 'some-other-mcp_do_thing', { status: 'running', input: {}, time: { start: 0 } }),
+    );
+    expect(toolUse(out[0]).name).toBe('Some-other-mcp_do_thing');
+  });
+
   it('aliases opencode camelCase input fields to the snake_case the formatters read', () => {
     // Regression: opencode read/write/edit put the path in `filePath`, but the
     // Claude file-tool formatter reads `file_path` → the path rendered as empty
@@ -364,6 +387,23 @@ describe('OpencodeEventTranslator', () => {
       const ops = pipe(t.translate(idle));
       expect(ops.some((o) => o.type === 'flush')).toBe(true);
       expect(ops.some((o) => o.type === 'status_update')).toBe(true);
+    });
+
+    it('a react_to_post tool call produces NO display op (hidden, like the Claude backend)', () => {
+      const translated = t.translate(
+        toolPart('c1', 'claude-threads-ses_08abc_react_to_post', { status: 'running', input: {}, time: { start: 0 } }),
+      );
+      const ops = pipe(translated);
+      expect(ops.some((o) => o.type === 'append_content')).toBe(false);
+    });
+
+    it('a send_file tool call renders as the clean MCP label (not the namespaced name)', () => {
+      const translated = t.translate(
+        toolPart('c2', 'claude-threads-ses_08abc_send_file', { status: 'running', input: {}, time: { start: 0 } }),
+      );
+      const append = pipe(translated).find((o) => o.type === 'append_content') as { content?: string } | undefined;
+      expect(append?.content).toContain('send_file');
+      expect(append?.content).not.toContain('claude-threads-ses_');
     });
   });
 });
