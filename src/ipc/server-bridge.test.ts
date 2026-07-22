@@ -49,6 +49,19 @@ async function makeBridge(socketPath: string): Promise<{ bridge: ServerBridge; s
       interruptSession: (id) => spies.interrupted.push(id),
     },
     getConnections: () => [],
+    getSettings: () => ({
+      workingDir: '/tmp/x',
+      worktreeMode: 'off',
+      respondOnlyWhenMentioned: false,
+      chrome: false,
+      keepAlive: true,
+      threadLogsEnabled: true,
+      cleanupWorktrees: true,
+      autoUpdateEnabled: true,
+      stickyDescription: '',
+      stickyFooter: '',
+    }),
+    onSaveSettings: () => {},
     onServerStop: () => {
       spies.stopped++;
     },

@@ -14,6 +14,9 @@ import {
   isWriteScopeMode,
   expandPlatformChannels,
   belongsToConnection,
+  pickGlobalSettings,
+  applyGlobalSettings,
+  type EditableGlobalSettings,
   type MattermostPlatformConfig,
   type SlackPlatformConfig,
   type PlatformInstanceConfig,
@@ -688,12 +691,34 @@ async function startWithoutDaemon() {
   };
   const getConnections = (): PlatformInstanceConfig[] => config.platforms.map(redactConnection);
 
+  // Global settings: read the editable subset; save persists + applies the two
+  // hot fields (chrome, keep-alive), the rest take effect on restart.
+  const getSettings = (): EditableGlobalSettings => pickGlobalSettings(config);
+  const saveSettings = (s: EditableGlobalSettings): void => {
+    applyGlobalSettings(config, s);
+    saveConfig(config);
+    // Hot-apply what we safely can at runtime.
+    runtimeConfig.chromeEnabled = s.chrome;
+    sessionManager?.setChromeEnabled(s.chrome);
+    runtimeConfig.keepAliveEnabled = s.keepAlive;
+    keepAlive.setEnabled(s.keepAlive);
+    ui.addLog({
+      level: 'info',
+      component: 'settings',
+      message:
+        'Global settings saved. Chrome + keep-alive applied live; working dir / worktree mode / limits / logs take effect on restart.',
+    });
+    sessionManager?.updateAllStickyMessages();
+  };
+
   bridge = new ServerBridge({
     version: VERSION,
     config: appConfig,
     callbacks: baseToggleCallbacks,
     actions: serverActions,
     getConnections,
+    getSettings,
+    onSaveSettings: saveSettings,
     onServerStop: () => {
       if (triggerShutdown) triggerShutdown();
     },
@@ -726,6 +751,8 @@ async function startWithoutDaemon() {
       onConnectionRemove: (id) => void removeConnection(id),
     },
     getConnections,
+    getSettings,
+    onSettingsSave: (s) => saveSettings(s as EditableGlobalSettings),
   });
   ui = bridge.wrapProvider(innerUi);
 

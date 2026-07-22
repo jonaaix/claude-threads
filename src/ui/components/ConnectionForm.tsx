@@ -10,7 +10,7 @@
  * only that platform). The form does not touch config itself.
  */
 import React from 'react';
-import { Box, Text, useInput } from 'ink';
+import { Box, Text, useInput, useStdout } from 'ink';
 import { TextInput, PasswordInput, Select } from '@inkjs/ui';
 import type {
   PlatformInstanceConfig,
@@ -46,6 +46,19 @@ const TYPE_OPTIONS = [
   { label: 'Mattermost', value: 'mattermost' },
   { label: 'Slack', value: 'slack' },
 ];
+const VISIBILITY_OPTIONS = [
+  { label: 'full', value: 'full' },
+  { label: 'minimal', value: 'minimal' },
+  { label: 'hidden', value: 'hidden' },
+];
+const WORKING_BLOCK_OPTIONS = [
+  { label: 'expanded', value: 'expanded' },
+  { label: 'hidden', value: 'hidden' },
+];
+const WRITE_SCOPE_OPTIONS = [
+  { label: 'workingDir (own dir only)', value: 'workingDir' },
+  { label: 'unrestricted (anywhere)', value: 'unrestricted' },
+];
 
 /** Field layout for the given platform type. */
 function fieldsFor(type: string, editingExisting: boolean): Field[] {
@@ -75,7 +88,26 @@ function fieldsFor(type: string, editingExisting: boolean): Field[] {
     { key: 'model', label: 'Model (optional)', section: 'Behavior', kind: 'text' },
     { key: 'workingDir', label: 'Working dir (optional)', section: 'Behavior', kind: 'text' },
     { key: 'description', label: 'Specialization (optional)', section: 'Behavior', kind: 'text' },
+    { key: 'sessionHeader', label: 'Session header', section: 'Behavior', kind: 'select', options: VISIBILITY_OPTIONS },
+    { key: 'stickyMessage', label: 'Channel sticky', section: 'Behavior', kind: 'select', options: VISIBILITY_OPTIONS },
+    { key: 'workingBlock', label: 'Working block', section: 'Behavior', kind: 'select', options: WORKING_BLOCK_OPTIONS },
+    { key: 'writeScope', label: 'Write scope (opencode)', section: 'Behavior', kind: 'select', options: WRITE_SCOPE_OPTIONS },
   ];
+}
+
+/** Coerce a possibly-unset config value to a string, falling back to a default. */
+function str(v: unknown, dflt: string): string {
+  return typeof v === 'string' && v ? v : dflt;
+}
+
+/** Index at which to break the field list into two columns — the first section
+ * boundary at or past the halfway point, so sections never straddle columns. */
+function columnSplitIndex(fields: Field[]): number {
+  const half = Math.ceil(fields.length / 2);
+  for (let i = half; i < fields.length; i++) {
+    if (fields[i].section !== fields[i - 1].section) return i;
+  }
+  return half;
 }
 
 function initialValues(initial?: PlatformInstanceConfig): Record<string, string> {
@@ -91,6 +123,10 @@ function initialValues(initial?: PlatformInstanceConfig): Record<string, string>
     model: typeof initial?.model === 'string' ? initial.model : '',
     workingDir: typeof initial?.workingDir === 'string' ? initial.workingDir : '',
     description: typeof initial?.description === 'string' ? initial.description : '',
+    sessionHeader: str(initial?.sessionHeader, 'full'),
+    stickyMessage: str(initial?.stickyMessage, 'full'),
+    workingBlock: str(initial?.workingBlock, 'expanded'),
+    writeScope: str(initial?.writeScope, 'workingDir'),
   };
   // PlatformInstanceConfig is the base interface (Mattermost/Slack extend it),
   // so `type` doesn't narrow — cast to read the type-specific fields.
@@ -187,67 +223,79 @@ export function ConnectionForm({ initial, existingIds, onSubmit, onCancel, statu
     { isActive: true },
   );
 
-  // Group fields by section for display.
-  let lastSection = '';
+  const { stdout } = useStdout();
+  const width = Math.min(Math.max(72, (stdout?.columns ?? 80) - 6), 110);
+
+  // Two columns so a long form (many Behavior knobs) fits without scrolling.
+  // Split on a section boundary near the middle so sections stay intact.
+  const splitAt = columnSplitIndex(fields);
+  const columns: Field[][] = [fields.slice(0, splitAt), fields.slice(splitAt)];
+  const colWidth = Math.floor((width - 6) / 2);
+
+  const renderRow = (f: Field, prevSection: string) => {
+    const idx = fields.indexOf(f);
+    const isActive = idx === activeIndex;
+    const isEditingThis = isActive && editing;
+    const val = values[f.key] ?? '';
+    return (
+      <Box key={f.key} flexDirection="column">
+        {f.section !== prevSection && <Text dimColor bold>{f.section}</Text>}
+        <Box>
+          <Box width={2} flexShrink={0}><Text color="cyan">{isActive ? '❯' : ''}</Text></Box>
+          <Box width={26} flexShrink={0}>
+            <Text color={isActive ? 'cyan' : 'gray'} wrap="truncate">{f.label}</Text>
+          </Box>
+          <Box flexGrow={1}>
+            {isEditingThis && f.kind === 'text' && (
+              <TextInput defaultValue={val} onSubmit={(v) => commit(f.key, v)} />
+            )}
+            {isEditingThis && f.kind === 'password' && (
+              <PasswordInput onSubmit={(v) => commit(f.key, v)} />
+            )}
+            {isEditingThis && f.kind === 'select' && (
+              <Select options={f.options ?? []} defaultValue={val} onChange={(v) => commit(f.key, v)} />
+            )}
+            {!isEditingThis && (
+              <Text dimColor={!val} wrap="truncate">
+                {f.kind === 'password'
+                  ? val
+                    ? '••••••••'
+                    : editingExisting
+                      ? '(unchanged)'
+                      : '(empty)'
+                  : f.kind === 'select'
+                    ? val
+                    : val || '(empty)'}
+              </Text>
+            )}
+          </Box>
+        </Box>
+      </Box>
+    );
+  };
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={2} paddingY={1} width={64}>
+    <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={2} paddingY={1} width={width}>
       <Box justifyContent="center" marginBottom={1}>
         <Text bold color="cyan">
           {editingExisting ? `Edit connection: ${values.id}` : 'Add connection'}
         </Text>
       </Box>
 
-      {fields.map((f, idx) => {
-        const isActive = idx === activeIndex;
-        const isEditingThis = isActive && editing;
-        const showSection = f.section !== lastSection;
-        lastSection = f.section;
-        const val = values[f.key] ?? '';
-        return (
-          <Box key={f.key} flexDirection="column">
-            {showSection && (
-              <Text dimColor bold>
-                {f.section}
-              </Text>
-            )}
-            <Box>
-              <Text color={isActive ? 'cyan' : undefined}>{isActive ? '❯ ' : '  '}</Text>
-              <Box width={26}>
-                <Text color={isActive ? 'cyan' : 'gray'}>{f.label}</Text>
-              </Box>
-              <Box flexGrow={1}>
-                {isEditingThis && f.kind === 'text' && (
-                  <TextInput defaultValue={val} onSubmit={(v) => commit(f.key, v)} />
-                )}
-                {isEditingThis && f.kind === 'password' && (
-                  <PasswordInput onSubmit={(v) => commit(f.key, v)} />
-                )}
-                {isEditingThis && f.kind === 'select' && (
-                  <Select
-                    options={f.options ?? []}
-                    defaultValue={val}
-                    onChange={(v) => commit(f.key, v)}
-                  />
-                )}
-                {!isEditingThis && (
-                  <Text dimColor={!val}>
-                    {f.kind === 'password'
-                      ? val
-                        ? '••••••••'
-                        : editingExisting
-                          ? '(unchanged)'
-                          : '(empty)'
-                      : f.kind === 'select'
-                        ? val
-                        : val || '(empty)'}
-                  </Text>
-                )}
-              </Box>
+      <Box flexDirection="row" gap={2}>
+        {columns.map((col, ci) => {
+          let prevSection = '';
+          return (
+            <Box key={ci} flexDirection="column" width={colWidth}>
+              {col.map((f) => {
+                const row = renderRow(f, prevSection);
+                prevSection = f.section;
+                return row;
+              })}
             </Box>
-          </Box>
-        );
-      })}
+          );
+        })}
+      </Box>
 
       <Box marginTop={1} flexDirection="column">
         {error && <Text color="red">⚠ {error}</Text>}
@@ -277,6 +325,11 @@ function assembleConfig(v: Record<string, string>): PlatformInstanceConfig {
     ...(v.model.trim() ? { model: v.model.trim() } : {}),
     ...(v.workingDir.trim() ? { workingDir: v.workingDir.trim() } : {}),
     ...(v.description.trim() ? { description: v.description.trim() } : {}),
+    // Only persist non-default behavior knobs to keep the YAML minimal.
+    ...(v.sessionHeader !== 'full' ? { sessionHeader: v.sessionHeader } : {}),
+    ...(v.stickyMessage !== 'full' ? { stickyMessage: v.stickyMessage } : {}),
+    ...(v.workingBlock !== 'expanded' ? { workingBlock: v.workingBlock } : {}),
+    ...(v.writeScope !== 'workingDir' ? { writeScope: v.writeScope } : {}),
   };
   if (v.type === 'slack') {
     return {

@@ -53,6 +53,9 @@ export {
   SUBPLATFORM_SEP,
 } from './channels.js';
 
+export { pickGlobalSettings, applyGlobalSettings, HOT_SETTINGS } from './settings.js';
+export type { EditableGlobalSettings } from './settings.js';
+
 import type { Config, WorktreeMode as WorktreeModeType, PermissionMode, OverheadVisibility } from './types.js';
 
 // YAML config path

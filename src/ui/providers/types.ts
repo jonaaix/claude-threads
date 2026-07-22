@@ -116,6 +116,11 @@ export interface StartUIOptions {
    */
   getConnections?: () => unknown[];
 
+  /** Current editable global settings (server: live; console: last-known). */
+  getSettings?: () => unknown;
+  /** Persist + apply edited global settings. */
+  onSettingsSave?: (settings: unknown) => void;
+
   /** Seed state for console (client) mode — hydrates the TUI on attach. */
   initialState?: UISeedState;
 }

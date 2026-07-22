@@ -8,7 +8,7 @@
  */
 import { startUI, type UIProvider, type AppConfig, type UISeedState } from '../ui/index.js';
 import type { ToggleCallbacks, SessionActionCallbacks } from '../ui/types.js';
-import type { PlatformInstanceConfig } from '../config/index.js';
+import type { PlatformInstanceConfig, EditableGlobalSettings } from '../config/index.js';
 import type { ControlClient } from './client.js';
 import type { ServerEvent } from './protocol.js';
 
@@ -38,6 +38,8 @@ export async function runConsoleClient(client: ControlClient): Promise<void> {
   // Last-known (redacted) connection list for the edit picker/form. Seeded from
   // the snapshot and refreshed on `connections` events.
   let connections: PlatformInstanceConfig[] = snapshot.connections ?? [];
+  // Last-known global settings for the settings form; refreshed on `settings`.
+  let settings: EditableGlobalSettings = snapshot.settings;
 
   // User actions in the console → commands over the socket.
   const toggleCallbacks: ToggleCallbacks = {
@@ -79,6 +81,8 @@ export async function runConsoleClient(client: ControlClient): Promise<void> {
     toggleCallbacks,
     actionCallbacks,
     getConnections: () => connections,
+    getSettings: () => settings,
+    onSettingsSave: (s) => client.send({ t: 'settings:save', settings: s as EditableGlobalSettings }),
     onLeave: detach,
     onStopServer: () => {
       // Tell the remote server to shut down, then detach this console.
@@ -121,6 +125,9 @@ export async function runConsoleClient(client: ControlClient): Promise<void> {
         break;
       case 'connections':
         connections = ev.connections;
+        break;
+      case 'settings':
+        settings = ev.settings;
         break;
       // 'toggles' / 'connection:result' / 'hello' / 'snapshot' need no live
       // handling here (results surface as log lines).

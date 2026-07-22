@@ -26,7 +26,7 @@ import type {
   ToggleCallbacks,
   AppConfig,
 } from '../ui/types.js';
-import type { PermissionMode, PlatformInstanceConfig } from '../config/index.js';
+import type { PermissionMode, PlatformInstanceConfig, EditableGlobalSettings } from '../config/index.js';
 import type { UIProvider } from '../ui/providers/types.js';
 import { ControlServer } from './server.js';
 import type { ClientCommand, Snapshot } from './protocol.js';
@@ -59,6 +59,10 @@ export interface ServerBridgeOptions {
   actions: ServerActionHandlers;
   /** Current connections with secrets redacted (for the console edit form). */
   getConnections: () => PlatformInstanceConfig[];
+  /** Current editable global settings (for the console settings form). */
+  getSettings: () => EditableGlobalSettings;
+  /** Persist + apply edited global settings. */
+  onSaveSettings: (settings: EditableGlobalSettings) => void;
   /** Invoked when a console requests `server:stop`. */
   onServerStop: () => void;
   log?: (msg: string) => void;
@@ -192,6 +196,10 @@ export class ServerBridge {
           .then((r) => this.control?.broadcast({ t: 'connection:result', id: cmd.id, ...r }));
         break;
       }
+      case 'settings:save':
+        this.opts.onSaveSettings(cmd.settings);
+        this.broadcastSettings();
+        break;
       case 'server:stop':
         this.opts.onServerStop();
         break;
@@ -233,12 +241,18 @@ export class ServerBridge {
       ready: this.ready,
       shuttingDown: this.shuttingDown,
       connections: this.opts.getConnections(),
+      settings: this.opts.getSettings(),
     };
   }
 
   /** Broadcast the current (redacted) connection list to attached consoles. */
   broadcastConnections(): void {
     this.control?.broadcast({ t: 'connections', connections: this.opts.getConnections() });
+  }
+
+  /** Broadcast the current global settings to attached consoles. */
+  broadcastSettings(): void {
+    this.control?.broadcast({ t: 'settings', settings: this.opts.getSettings() });
   }
 
   // ---- provider wrapper -------------------------------------------------

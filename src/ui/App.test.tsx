@@ -36,12 +36,23 @@ const getConnections = () => [
   { id: 'slack', type: 'slack', displayName: 'Main Team', botName: 'claude-code', channelId: 'C1', allowedUsers: ['alice'], permissionMode: 'auto', botToken: '', appToken: '' },
 ];
 
-function renderHub(opts?: { mode?: 'server' | 'console'; onLeave?: () => void; onStopServer?: () => void }) {
+const settings = {
+  workingDir: '/repo',
+  worktreeMode: 'off',
+  respondOnlyWhenMentioned: false,
+  chrome: false,
+  keepAlive: true,
+  threadLogsEnabled: true,
+};
+
+function renderHub(opts?: { mode?: 'server' | 'console'; onLeave?: () => void; onStopServer?: () => void; onSettingsSave?: (s: unknown) => void }) {
   return render(
     React.createElement(App, {
       config,
       initialState,
       getConnections,
+      getSettings: () => settings,
+      onSettingsSave: opts?.onSettingsSave ?? (() => {}),
       mode: opts?.mode ?? 'server',
       onLeave: opts?.onLeave,
       onStopServer: opts?.onStopServer,
@@ -95,6 +106,17 @@ describe('management hub', () => {
     // Assert a mid-list keybinding row (the centered title/hint can clip on a
     // short test tty; the middle rows stay visible).
     expect(lastFrame() ?? '').toContain('stop / interrupt session');
+    unmount();
+  });
+
+  test('"g" opens the global settings form', async () => {
+    const { lastFrame, stdin, unmount } = renderHub();
+    await tick();
+    stdin.write('g');
+    await tick();
+    const frame = lastFrame() ?? '';
+    expect(frame).toContain('Worktree mode');
+    expect(frame).toContain('Thread logs');
     unmount();
   });
 

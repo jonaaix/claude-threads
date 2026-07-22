@@ -34,7 +34,7 @@ export class InkProvider implements UIProvider {
   }
 
   async start(): Promise<void> {
-    const { config, onLeave, onStopServer, toggleCallbacks, actionCallbacks, getConnections, initialState, mode } = this.options;
+    const { config, onLeave, onStopServer, toggleCallbacks, actionCallbacks, getConnections, getSettings, onSettingsSave, initialState, mode } = this.options;
 
     // Check for TTY - fail fast if not interactive
     if (!process.stdout.isTTY || !process.stdin.isTTY) {
@@ -68,6 +68,8 @@ export class InkProvider implements UIProvider {
         toggleCallbacks,
         actionCallbacks,
         getConnections,
+        getSettings,
+        onSettingsSave,
         initialState,
         mode,
       }),

@@ -23,7 +23,7 @@ import type {
   ToggleState,
   AppConfig,
 } from '../ui/types.js';
-import type { PermissionMode, PlatformInstanceConfig } from '../config/index.js';
+import type { PermissionMode, PlatformInstanceConfig, EditableGlobalSettings } from '../config/index.js';
 
 /** One-shot full state sent immediately after a client connects. */
 export interface Snapshot {
@@ -37,6 +37,8 @@ export interface Snapshot {
   shuttingDown: boolean;
   /** Configured connections, secrets redacted — for the edit form. */
   connections: PlatformInstanceConfig[];
+  /** Editable bot-wide settings — for the settings form. */
+  settings: EditableGlobalSettings;
 }
 
 export type ServerEvent =
@@ -53,6 +55,8 @@ export type ServerEvent =
   | { t: 'toggles'; toggles: ToggleState }
   /** Updated connection list (secrets redacted) after a save/remove. */
   | { t: 'connections'; connections: PlatformInstanceConfig[] }
+  /** Updated global settings after a save. */
+  | { t: 'settings'; settings: EditableGlobalSettings }
   /** Outcome of a connection:save / connection:remove command. */
   | { t: 'connection:result'; id: string; ok: boolean; error?: string }
   /** Server is going away (shutdown / restart). Client should detach cleanly. */
@@ -72,6 +76,8 @@ export type ClientCommand =
   // Connection management (add or update by id, remove by id).
   | { t: 'connection:save'; config: PlatformInstanceConfig }
   | { t: 'connection:remove'; id: string }
+  // Global settings.
+  | { t: 'settings:save'; settings: EditableGlobalSettings }
   | { t: 'server:stop' };
 
 // ---------------------------------------------------------------------------

@@ -32,6 +32,18 @@ function makeSnapshot(): Snapshot {
     ready: true,
     shuttingDown: false,
     connections: [],
+    settings: {
+      workingDir: '/tmp/x',
+      worktreeMode: 'off',
+      respondOnlyWhenMentioned: false,
+      chrome: false,
+      keepAlive: true,
+      threadLogsEnabled: true,
+      cleanupWorktrees: true,
+      autoUpdateEnabled: true,
+      stickyDescription: '',
+      stickyFooter: '',
+    },
   };
 }
 

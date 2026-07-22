@@ -20,7 +20,8 @@ import { RootLayout } from './layouts/index.js';
 import { Spinner } from './components/Spinner.js';
 import { OverlayModal } from './components/OverlayModal.js';
 import { ConnectionForm } from './components/ConnectionForm.js';
-import type { PlatformInstanceConfig } from '../config/index.js';
+import { SettingsForm } from './components/SettingsForm.js';
+import type { PlatformInstanceConfig, EditableGlobalSettings } from '../config/index.js';
 import { permissionModeDisplay, parseChannelIds, belongsToConnection } from '../config/index.js';
 import { useAppState } from './hooks/useAppState.js';
 import type { AppConfig, SessionInfo, LogEntry, PlatformStatus, ToggleState, ToggleCallbacks, SessionActionCallbacks, UpdatePanelState } from './types.js';
@@ -39,6 +40,10 @@ interface AppProps {
   actionCallbacks?: SessionActionCallbacks;
   /** Current connections (secrets redacted) for the detail/edit form. */
   getConnections?: () => unknown[];
+  /** Current editable global settings for the settings form. */
+  getSettings?: () => unknown;
+  /** Persist + apply edited global settings. */
+  onSettingsSave?: (settings: unknown) => void;
   /** 'server' → quit stops the bot; 'console' → quit just detaches. */
   mode?: 'server' | 'console';
   /** Seed state for console (client) mode — hydrates the TUI on attach. */
@@ -74,7 +79,7 @@ interface ConnView {
   sessionCount: number;
 }
 
-export function App({ config, onStateReady, onResizeReady, onLeave, onStopServer, toggleCallbacks, actionCallbacks, getConnections, mode = 'server', initialState }: AppProps) {
+export function App({ config, onStateReady, onResizeReady, onLeave, onStopServer, toggleCallbacks, actionCallbacks, getConnections, getSettings, onSettingsSave, mode = 'server', initialState }: AppProps) {
   const {
     state,
     setReady,
@@ -92,7 +97,7 @@ export function App({ config, onStateReady, onResizeReady, onLeave, onStopServer
 
   const { stdout } = useStdout();
   const terminalCols = stdout?.columns ?? 100;
-  const leftWidth = Math.min(40, Math.max(26, Math.floor(terminalCols * 0.32)));
+  const leftWidth = Math.min(60, Math.max(34, Math.floor(terminalCols * 0.42)));
 
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [resizeCount, setResizeCount] = React.useState(0);
@@ -115,6 +120,7 @@ export function App({ config, onStateReady, onResizeReady, onLeave, onStopServer
   const [formOpen, setFormOpen] = React.useState<{ initial?: PlatformInstanceConfig } | null>(null);
   const [helpOpen, setHelpOpen] = React.useState(false);
   const [quitMenu, setQuitMenu] = React.useState(false);
+  const [settingsOpen, setSettingsOpen] = React.useState(false);
 
   // Hub navigation state.
   const [focus, setFocus] = React.useState<Focus>('connections');
@@ -290,7 +296,7 @@ export function App({ config, onStateReady, onResizeReady, onLeave, onStopServer
 
   const canManageConns = !!actionCallbacks?.onConnectionSave;
   const logsFocused = focus === 'logs';
-  const anyModal = formOpen !== null || pendingConfirm !== null || helpOpen || quitMenu || toggles.updateModalVisible;
+  const anyModal = formOpen !== null || pendingConfirm !== null || helpOpen || quitMenu || settingsOpen || toggles.updateModalVisible;
 
   // Esc closes the quit menu (the Select itself ignores Esc).
   useInput(
@@ -330,6 +336,7 @@ export function App({ config, onStateReady, onResizeReady, onLeave, onStopServer
       // same choice in both modes.
       if (input === 'q') { setQuitMenu(true); return; }
       if (input === '?') { setHelpOpen(true); return; }
+      if (input === 'g' && getSettings && onSettingsSave) { setSettingsOpen(true); return; }
 
       // Focus movement.
       if (key.tab) {
@@ -396,7 +403,7 @@ export function App({ config, onStateReady, onResizeReady, onLeave, onStopServer
           break;
       }
     },
-    { isActive: formOpen === null && !quitMenu },
+    { isActive: formOpen === null && !quitMenu && !settingsOpen },
   );
 
   // ---- render pieces ----
@@ -491,8 +498,20 @@ export function App({ config, onStateReady, onResizeReady, onLeave, onStopServer
     </OverlayModal>
   ) : null;
 
+  const settingsModal =
+    settingsOpen && getSettings ? (
+      <SettingsForm
+        initial={getSettings() as EditableGlobalSettings}
+        onSubmit={(s) => {
+          onSettingsSave?.(s);
+          setSettingsOpen(false);
+        }}
+        onCancel={() => setSettingsOpen(false)}
+      />
+    ) : null;
+
   return (
-    <RootLayout header={header} footer={footer} modal={formModal ?? confirmModal ?? helpModal ?? quitModal ?? activeModal}>
+    <RootLayout header={header} footer={footer} modal={formModal ?? confirmModal ?? helpModal ?? quitModal ?? settingsModal ?? activeModal}>
       {body}
     </RootLayout>
   );
@@ -739,7 +758,7 @@ function HubFooter({ focus, canManageConns }: { focus: Focus; canManageConns: bo
         <Text><Text color="cyan">↑/↓</Text><Text dimColor> move</Text></Text>
         <Text dimColor wrap="truncate-end">{ctx}</Text>
         <Box flexGrow={1} justifyContent="flex-end">
-          <Text dimColor wrap="truncate-end">d/p/c/k · ⇧X stop · ? help · q quit</Text>
+          <Text dimColor wrap="truncate-end">g settings · d/p/c/k · ⇧X stop · ? help · q quit</Text>
         </Box>
       </Box>
     </Box>
@@ -757,6 +776,7 @@ function HelpModal() {
     ['d / p / c / k', 'toggle debug / perms / chrome / keep-alive'],
     ['u / ⇧U', 'update panel / force update'],
     ['⇧X', 'stop the whole server'],
+    ['g', 'edit global settings'],
     ['? / q', 'this help / quit'],
   ];
   return (
