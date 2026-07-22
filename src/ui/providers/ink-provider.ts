@@ -21,6 +21,7 @@ export class InkProvider implements UIProvider {
   private handlers: AppHandlers | null = null;
   private waitUntilExitFn: (() => Promise<unknown>) | null = null;
   private onResize: (() => void) | null = null;
+  private restoreTerminal: () => void = () => {};
   private exitPromiseResolve: (() => void) | null = null;
   private exitPromise: Promise<void>;
 
@@ -33,12 +34,20 @@ export class InkProvider implements UIProvider {
   }
 
   async start(): Promise<void> {
-    const { config, onQuit, toggleCallbacks } = this.options;
+    const { config, onLeave, onStopServer, toggleCallbacks, actionCallbacks, getConnections, initialState, mode } = this.options;
 
     // Check for TTY - fail fast if not interactive
     if (!process.stdout.isTTY || !process.stdin.isTTY) {
       throw new Error('InkProvider requires an interactive terminal (TTY). Use HeadlessProvider for non-TTY environments.');
     }
+
+    // Enter the alternate screen buffer so the hub owns the whole viewport
+    // (like vim / lazygit). This eliminates scrollback bleed — the "old frame
+    // glitching through" you get when a full-height Ink app re-renders — and
+    // restores the user's terminal untouched on exit.
+    process.stdout.write('\x1b[?1049h'); // enter alt screen
+    process.stdout.write('\x1b[2J\x1b[H'); // clear it
+    process.stdout.write('\x1b[?25l'); // hide cursor
 
     // Promise that resolves when handlers are ready
     let resolveHandlers: (handlers: AppHandlers) => void;
@@ -54,8 +63,13 @@ export class InkProvider implements UIProvider {
         onResizeReady: (handler: () => void) => {
           this.onResize = handler;
         },
-        onQuit,
+        onLeave,
+        onStopServer,
         toggleCallbacks,
+        actionCallbacks,
+        getConnections,
+        initialState,
+        mode,
       }),
       {
         // Hide the cursor - we only use keyboard shortcuts, not text input
@@ -67,12 +81,14 @@ export class InkProvider implements UIProvider {
 
     this.waitUntilExitFn = waitUntilExit;
 
-    // Hide cursor explicitly
-    process.stdout.write('\x1b[?25l');
-
-    // Restore cursor on exit
-    const restoreCursor = () => process.stdout.write('\x1b[?25h');
-    process.on('exit', restoreCursor);
+    // Restore the terminal on exit: show cursor and leave the alternate screen
+    // buffer (bringing back the user's original terminal contents). Guarded so
+    // a double invocation (stop() + process 'exit') is harmless.
+    this.restoreTerminal = () => {
+      process.stdout.write('\x1b[?25h'); // show cursor
+      process.stdout.write('\x1b[?1049l'); // leave alt screen
+    };
+    process.on('exit', this.restoreTerminal);
 
     // Handle terminal resize - clear screen and trigger re-render
     const handleResize = () => {
@@ -88,8 +104,8 @@ export class InkProvider implements UIProvider {
   }
 
   async stop(): Promise<void> {
-    // Restore cursor visibility
-    process.stdout.write('\x1b[?25h');
+    // Restore the terminal (show cursor + leave alt screen).
+    this.restoreTerminal();
 
     // Resolve the exit promise
     if (this.exitPromiseResolve) {

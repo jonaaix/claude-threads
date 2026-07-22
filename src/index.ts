@@ -4,6 +4,7 @@ import { program } from 'commander';
 import {
   loadConfigWithMigration,
   configExists as checkConfigExists,
+  saveConfig,
   resolvePermissionMode,
   resolveOverheadVisibility,
   isOverheadVisibility,
@@ -11,6 +12,8 @@ import {
   resolveAgentBackend,
   isWorkingBlockMode,
   isWriteScopeMode,
+  expandPlatformChannels,
+  belongsToConnection,
   type MattermostPlatformConfig,
   type SlackPlatformConfig,
   type PlatformInstanceConfig,
@@ -31,7 +34,10 @@ import { startReactMeasureCleanup } from './utils/perf-cleanup.js';
 import { dim, red } from './utils/colors.js';
 import { validateClaudeCli } from './claude/version-check.js';
 import { validateOpencode } from './opencode/version-check.js';
-import { startUI, type UIProvider } from './ui/index.js';
+import { startUI, type UIProvider, type AppConfig } from './ui/index.js';
+import type { ToggleCallbacks } from './ui/types.js';
+import { ControlClient, ServerBridge, runConsoleClient } from './ipc/index.js';
+import { spawn } from 'child_process';
 import { setLogHandler } from './utils/logger.js';
 import { handleMessage } from './message-handler.js';
 import { AutoUpdateManager } from './auto-update/index.js';
@@ -124,7 +130,8 @@ program
   .option('--sticky-message <mode>', 'Channel sticky message: full | minimal | hidden. Overrides per-platform config.')
   .option('--keep-alive', 'Enable system sleep prevention (default: enabled)')
   .option('--no-keep-alive', 'Disable system sleep prevention')
-  .option('--setup', 'Run interactive setup wizard (reconfigure existing settings)')
+  .option('--setup', 'Open the management console (add/edit connections interactively)')
+  .option('--wizard', 'Run the legacy step-by-step setup wizard (fallback)')
   .option('--debug', 'Enable debug logging')
   .option('--skip-version-check', 'Skip Claude CLI version compatibility check')
   .option('--auto-restart', 'Enable auto-restart on updates (default when autoUpdate enabled)')
@@ -146,6 +153,29 @@ function hasRequiredCliArgs(args: typeof opts): boolean {
 }
 
 async function main() {
+  // Single-instance guard: if a server is already running, attach to it as a
+  // management console instead of booting a second server (which would double
+  // every platform connection). "Is a server up?" is decided by connecting to
+  // its control socket. Skipped only for the legacy --wizard flow, which must
+  // run standalone against config on disk.
+  if (!opts.wizard) {
+    const existing = await ControlClient.tryConnect();
+    if (existing) {
+      if (!process.stdout.isTTY || !process.stdin.isTTY) {
+        // No TTY to render a console — just report the running instance.
+        console.log(
+          `claude-threads is already running (pid ${existing.serverPid}, v${existing.serverVersion}). ` +
+            `Open an interactive terminal to attach the management console.`,
+        );
+        existing.close();
+        process.exit(0);
+      }
+      process.stdout.write('\x1b[2J\x1b[H');
+      await runConsoleClient(existing);
+      process.exit(0);
+    }
+  }
+
   // Clear screen for a clean start (only in interactive mode)
   if (!isHeadless) {
     process.stdout.write('\x1b[2J\x1b[H');
@@ -181,7 +211,6 @@ async function main() {
   };
 
   if (await shouldUseAutoRestart()) {
-    const { spawn } = await import('child_process');
     const { dirname, resolve } = await import('path');
     const { fileURLToPath } = await import('url');
 
@@ -306,18 +335,38 @@ async function startWithoutDaemon() {
     stickyMessage: opts.stickyMessage as OverheadVisibility | undefined,
   };
 
-  // Check if we need onboarding
-  if (opts.setup) {
-    await runOnboarding(true); // reconfigure mode
+  // Onboarding. The legacy step-by-step wizard is now opt-in via --wizard. The
+  // default first-run path drops you straight into the management console with
+  // an empty config, where [a] adds your first connection via the navigable
+  // form (no more restart-on-typo). The wizard remains as a fallback (and for
+  // non-interactive first runs, which can't drive the console form).
+  if (opts.wizard) {
+    await runOnboarding(true); // reconfigure via the legacy wizard
   } else if (!checkConfigExists() && !hasRequiredCliArgs(opts)) {
-    await runOnboarding(false); // first-time mode
+    if (!process.stdout.isTTY || !process.stdin.isTTY) {
+      // No TTY to render the console form → fall back to the wizard.
+      await runOnboarding(false);
+    } else {
+      // Interactive first run: seed a minimal config and boot into the console.
+      const defaultConfig = {
+        version: 2 as const,
+        workingDir: process.cwd(),
+        chrome: false,
+        worktreeMode: 'prompt' as const,
+        platforms: [],
+      };
+      saveConfig(defaultConfig);
+      console.log('');
+      console.log('  Starting the management console — press [a] to add your first connection.');
+      console.log('');
+    }
   }
 
   const workingDir = process.cwd();
   const newConfig = loadConfigWithMigration();
 
   if (!newConfig) {
-    throw new Error('No configuration found. Run with --setup to configure.');
+    throw new Error('No configuration found. Run with --wizard to configure, or check file permissions.');
   }
 
   // CLI args can override global settings
@@ -347,9 +396,12 @@ async function startWithoutDaemon() {
   // Determine keep-alive setting (actual setup happens after UI is ready)
   const keepAliveEnabled = newConfig.keepAlive !== false;
 
-  // Validate we have at least one platform configured
-  if (!newConfig.platforms || newConfig.platforms.length === 0) {
-    throw new Error('No platforms configured. Run with --setup to configure.');
+  // Zero platforms is a valid, non-fatal state now: it's the first-run bootstrap
+  // (add your first connection from the console with [a]) and also what you're
+  // left with after removing the last connection at runtime. The console guides
+  // the user to add one; we no longer crash.
+  if (!newConfig.platforms) {
+    newConfig.platforms = [];
   }
 
   const config = newConfig;
@@ -358,15 +410,19 @@ async function startWithoutDaemon() {
   // (for backwards compatibility with single-platform setups). Precedence:
   // --permission-mode CLI flag > --skip-permissions / --no-skip-permissions
   // (legacy) > platform config's `permissionMode` > platform config's legacy
-  // `skipPermissions` > 'default' (safe fallback).
-  const firstPlatformConfig = config.platforms[0] as MattermostPlatformConfig | SlackPlatformConfig;
+  // `skipPermissions` > 'default' (safe fallback). Undefined when there are no
+  // platforms yet — the resolver falls back to a safe default.
+  const firstPlatformConfig = config.platforms[0] as
+    | MattermostPlatformConfig
+    | SlackPlatformConfig
+    | undefined;
   const initialPermissionMode: PermissionMode = resolvePermissionMode({
     permissionMode:
       cliArgs.permissionMode
-      ?? firstPlatformConfig.permissionMode,
+      ?? firstPlatformConfig?.permissionMode,
     skipPermissions:
       cliArgs.skipPermissions
-      ?? firstPlatformConfig.skipPermissions,
+      ?? firstPlatformConfig?.skipPermissions,
   });
 
   // Which backends does this config actually use? A bot configured entirely
@@ -471,22 +527,32 @@ async function startWithoutDaemon() {
   // Session store for persistence (created early so toggle callbacks can use it)
   const sessionStore = new SessionStore();
 
-  // Start the UI (Ink TUI or headless depending on mode)
-  const ui: UIProvider = await startUI({
-    config: {
-      version: VERSION,
-      workingDir,
-      claudeVersion: claudeValidation.version || 'unknown',
-      claudeCompatible: claudeValidation.compatible,
-      permissionMode: runtimeConfig.permissionMode,
-      chromeEnabled: runtimeConfig.chromeEnabled,
-      keepAliveEnabled: runtimeConfig.keepAliveEnabled,
-    },
-    headless: isHeadless,
-    onQuit: () => {
-      if (triggerShutdown) triggerShutdown();
-    },
-    toggleCallbacks: {
+  // App config, shared by the local UI and the control-socket snapshot.
+  const appConfig: AppConfig = {
+    version: VERSION,
+    workingDir,
+    claudeVersion: claudeValidation.version || 'unknown',
+    claudeCompatible: claudeValidation.compatible,
+    permissionMode: runtimeConfig.permissionMode,
+    chromeEnabled: runtimeConfig.chromeEnabled,
+    keepAliveEnabled: runtimeConfig.keepAliveEnabled,
+  };
+
+  // The UIProvider the rest of this function talks to. Assigned below as the
+  // ServerBridge-wrapped provider so every mutation also broadcasts to any
+  // attached management consoles. The toggle callbacks defined below close over
+  // it and run only after assignment, so the forward reference is safe — hence
+  // `let` with a deferred assignment rather than `const`.
+  // eslint-disable-next-line prefer-const
+  let ui: UIProvider;
+
+  // Control server (single-instance / management-console channel). Assigned
+  // after the provider is wrapped; closed on shutdown.
+  let bridge: ServerBridge | null = null;
+
+  // The real toggle callbacks (unchanged logic). The bridge wraps these so a
+  // toggle flipped locally or by a remote console stays consistent everywhere.
+  const baseToggleCallbacks: ToggleCallbacks = {
       onDebugToggle: (enabled) => {
         // process.env.DEBUG is already updated in App.tsx
         // Persist for daemon restart
@@ -536,37 +602,40 @@ async function startWithoutDaemon() {
         sessionManager?.updateAllStickyMessages();
       },
       onPlatformToggle: async (platformId, enabled) => {
-        const client = platforms.get(platformId);
-        if (!client) {
+        // A connection may have several channels → several clients ("base#chan").
+        // Toggle every client that belongs to the connection.
+        const subIds = Array.from(platforms.keys()).filter((pid) => belongsToConnection(pid, platformId));
+        if (subIds.length === 0) {
           ui.addLog({ level: 'error', component: 'toggle', message: `Platform ${platformId} not found` });
           return;
         }
 
         if (enabled) {
-          // Re-enable platform: reconnect and resume sessions
           ui.addLog({ level: 'info', component: 'toggle', message: `Enabling platform ${platformId}...` });
-          try {
-            client.prepareForReconnect();
-            await client.connect();
-            // Persist enabled state after successful connect
-            sessionStore.setPlatformEnabled(platformId, true);
-            ui.addLog({ level: 'info', component: 'toggle', message: `✓ Platform ${platformId} reconnected` });
-            // Resume paused sessions for this platform
-            await sessionManager?.resumePausedSessionsForPlatform(platformId);
-          } catch (err) {
-            ui.addLog({ level: 'error', component: 'toggle', message: `Failed to reconnect ${platformId}: ${err}` });
-            // Revert UI state since connect failed
-            ui.setPlatformStatus(platformId, { enabled: false });
+          for (const pid of subIds) {
+            const client = platforms.get(pid);
+            if (!client) continue;
+            try {
+              client.prepareForReconnect();
+              await client.connect();
+              sessionStore.setPlatformEnabled(pid, true);
+              await sessionManager?.resumePausedSessionsForPlatform(pid);
+            } catch (err) {
+              ui.addLog({ level: 'error', component: 'toggle', message: `Failed to reconnect ${pid}: ${err}` });
+              ui.setPlatformStatus(pid, { enabled: false });
+            }
           }
+          ui.addLog({ level: 'info', component: 'toggle', message: `✓ Platform ${platformId} reconnected` });
         } else {
-          // Disable platform: pause sessions and disconnect
           ui.addLog({ level: 'info', component: 'toggle', message: `Disabling platform ${platformId}...` });
-          // Pause all active sessions for this platform first
-          await sessionManager?.pauseSessionsForPlatform(platformId);
-          client.disconnect();
-          // Persist disabled state
-          sessionStore.setPlatformEnabled(platformId, false);
-          ui.setPlatformStatus(platformId, { connected: false, reconnecting: false });
+          for (const pid of subIds) {
+            const client = platforms.get(pid);
+            if (!client) continue;
+            await sessionManager?.pauseSessionsForPlatform(pid);
+            client.disconnect();
+            sessionStore.setPlatformEnabled(pid, false);
+            ui.setPlatformStatus(pid, { connected: false, reconnecting: false });
+          }
           ui.addLog({ level: 'info', component: 'toggle', message: `✓ Platform ${platformId} disabled` });
         }
       },
@@ -580,8 +649,98 @@ async function startWithoutDaemon() {
           ui.addLog({ level: 'info', component: 'update', message: 'No update available to install' });
         }
       },
+  };
+
+  // Management actions triggered from the local TUI or a remote console. The
+  // console sends the composite session id ("platformId:threadId"); split it
+  // and route to the SessionManager (attributed to a synthetic "console" user).
+  const splitSessionId = (id: string): { platformId?: string; threadId: string } => {
+    const idx = id.indexOf(':');
+    return idx === -1
+      ? { threadId: id }
+      : { platformId: id.slice(0, idx), threadId: id.slice(idx + 1) };
+  };
+  const serverActions = {
+    cancelSession: (sessionId: string) => {
+      const { platformId, threadId } = splitSessionId(sessionId);
+      ui.addLog({ level: 'info', component: 'console', message: `Stop session ${sessionId}` });
+      void sessionManager?.cancelSession(threadId, 'console', platformId);
     },
+    interruptSession: (sessionId: string) => {
+      const { platformId, threadId } = splitSessionId(sessionId);
+      ui.addLog({ level: 'info', component: 'console', message: `Interrupt session ${sessionId}` });
+      void sessionManager?.interruptSession(threadId, 'console', platformId);
+    },
+  };
+
+  // Wrap the provider + callbacks with the control-socket bridge, then start
+  // the real UI (Ink or headless) with the wrapped callbacks. `ui` (used above
+  // by the callbacks) is the bridge-wrapped provider, so every mutation it
+  // makes is also broadcast to attached management consoles.
+  // Redacted view of the configured connections for the console edit form —
+  // secrets are stripped so tokens never travel to (or render in) a console.
+  const redactConnection = (p: PlatformInstanceConfig): PlatformInstanceConfig => {
+    const clone = { ...p } as Record<string, unknown>;
+    for (const k of ['token', 'botToken', 'appToken']) {
+      if (k in clone) clone[k] = '';
+    }
+    return clone as unknown as PlatformInstanceConfig;
+  };
+  const getConnections = (): PlatformInstanceConfig[] => config.platforms.map(redactConnection);
+
+  bridge = new ServerBridge({
+    version: VERSION,
+    config: appConfig,
+    callbacks: baseToggleCallbacks,
+    actions: serverActions,
+    getConnections,
+    onServerStop: () => {
+      if (triggerShutdown) triggerShutdown();
+    },
+    log: (msg) => ui.addLog({ level: 'debug', component: 'ipc', message: msg }),
   });
+
+  const innerUi: UIProvider = await startUI({
+    config: appConfig,
+    headless: isHeadless,
+    mode: 'server',
+    // "Leave console — keep server running": re-launch the server detached in
+    // the background (headless) and exit this foreground process. Sessions
+    // resume from persistence, exactly like an auto-update restart.
+    onLeave: () => void detachToBackground(),
+    // "Quit server": full graceful shutdown.
+    onStopServer: () => {
+      if (triggerShutdown) triggerShutdown();
+    },
+    toggleCallbacks: bridge.wrapCallbacks(),
+    actionCallbacks: {
+      onSessionCancel: serverActions.cancelSession,
+      onSessionInterrupt: serverActions.interruptSession,
+      onServerStop: () => {
+        if (triggerShutdown) triggerShutdown();
+      },
+      // Local-TUI connection management routes straight to the hot-reload
+      // closures declared further below (invoked later, so the reference is
+      // safe). Remote consoles reach the same closures via the control socket.
+      onConnectionSave: (cfg) => void addOrUpdateConnection(cfg as PlatformInstanceConfig),
+      onConnectionRemove: (id) => void removeConnection(id),
+    },
+    getConnections,
+  });
+  ui = bridge.wrapProvider(innerUi);
+
+  // Open the control socket so a second `claude-threads` invocation attaches as
+  // a management console instead of starting a second server. Non-fatal: the
+  // bot still runs if the socket can't be opened.
+  try {
+    await bridge.listen();
+  } catch (err) {
+    innerUi.addLog({
+      level: 'warn',
+      component: 'ipc',
+      message: `Control socket unavailable (console attach disabled): ${err}`,
+    });
+  }
 
   // Route all logger output through the UI
   setLogHandler((level, component, message, sessionId) => {
@@ -635,12 +794,11 @@ async function startWithoutDaemon() {
   // Load persisted platform enabled states (sessionStore created earlier for toggle callbacks)
   const platformEnabledState = sessionStore.getPlatformEnabledState();
 
-  // Initialize all configured platforms
-  ui.addLog({ level: 'debug', component: 'init', message: `Initializing ${config.platforms.length} platform(s)` });
-  for (const platformConfig of config.platforms) {
+  // Register a platform's UI status, client, session-manager wiring and event
+  // wiring. Extracted from the init loop so runtime hot-add (a management
+  // console adding a connection) reuses the exact same setup — no full restart.
+  const registerPlatform = (platformConfig: PlatformInstanceConfig, isEnabled: boolean): PlatformClient => {
     const typedConfig = platformConfig as MattermostPlatformConfig | SlackPlatformConfig;
-    const isEnabled = platformEnabledState.get(platformConfig.id) ?? true; // Default to enabled
-    ui.addLog({ level: 'info', component: 'init', message: `Creating ${platformConfig.type} platform: ${platformConfig.id}${isEnabled ? '' : ' (disabled)'}` });
 
     // Register platform with UI (with persisted enabled state)
     ui.setPlatformStatus(platformConfig.id, {
@@ -676,6 +834,20 @@ async function startWithoutDaemon() {
 
     // Wire up platform events
     wirePlatformEvents(platformConfig.id, client, session, ui);
+    return client;
+  };
+
+  // Initialize all configured platforms. A connection with several channels is
+  // expanded into one single-channel client per channel (sub-id "base#chan"),
+  // so the platform clients stay strictly single-channel. Enabled state is
+  // keyed by the base connection id and inherited by every sub-client.
+  ui.addLog({ level: 'debug', component: 'init', message: `Initializing ${config.platforms.length} connection(s)` });
+  for (const platformConfig of config.platforms) {
+    const isEnabled = platformEnabledState.get(platformConfig.id) ?? true; // Default to enabled
+    for (const sub of expandPlatformChannels(platformConfig)) {
+      ui.addLog({ level: 'info', component: 'init', message: `Creating ${sub.type} platform: ${sub.id}${isEnabled ? '' : ' (disabled)'}` });
+      registerPlatform(sub, isEnabled);
+    }
   }
 
   // Connect only enabled platforms
@@ -708,11 +880,179 @@ async function startWithoutDaemon() {
     ui.addLog({ level: 'error', component: 'init', message: '⚠️ No platforms connected. Check your configuration and credentials.' });
   }
 
+  // ---------------------------------------------------------------------------
+  // Runtime connection management (per-client hot-reload)
+  //
+  // Adding/updating/removing a connection touches ONLY the affected platform
+  // client — other sessions keep running. The config is persisted so the change
+  // survives a restart.
+  // ---------------------------------------------------------------------------
+
+  // Tear down every client belonging to a connection (a multi-channel
+  // connection has one client per channel: "base#chan").
+  const teardownConnection = async (baseId: string): Promise<void> => {
+    const subIds = Array.from(platforms.keys()).filter((pid) => belongsToConnection(pid, baseId));
+    for (const pid of subIds) {
+      // Pause active sessions so they can resume after the client comes back
+      // (an update) or stay parked (a removal).
+      await session.pauseSessionsForPlatform(pid).catch(() => {});
+      await platforms.get(pid)?.disconnect().catch(() => {});
+      session.removePlatform(pid);
+      platforms.delete(pid);
+    }
+  };
+
+  const addOrUpdateConnection = async (
+    platformConfig: PlatformInstanceConfig,
+  ): Promise<{ ok: boolean; error?: string }> => {
+    const id = platformConfig.id;
+    try {
+      const idx = config.platforms.findIndex((p) => p.id === id);
+      const isUpdate = idx >= 0;
+      if (isUpdate) {
+        ui.addLog({ level: 'info', component: 'connection', message: `Updating connection ${id}…` });
+        await teardownConnection(id);
+      } else {
+        ui.addLog({ level: 'info', component: 'connection', message: `Adding connection ${id}…` });
+      }
+
+      // Preserve secrets on edit: a console never receives the real token
+      // (it's redacted), so an empty incoming secret means "keep the existing
+      // one" rather than wiping it.
+      if (isUpdate) {
+        const existingCfg = config.platforms[idx] as unknown as Record<string, unknown>;
+        const incoming = platformConfig as unknown as Record<string, unknown>;
+        for (const k of ['token', 'botToken', 'appToken']) {
+          if (!incoming[k] && existingCfg[k]) incoming[k] = existingCfg[k];
+        }
+      }
+
+      // Upsert the (single, possibly multi-channel) connection entry + persist.
+      if (idx >= 0) config.platforms[idx] = platformConfig;
+      else config.platforms.push(platformConfig);
+      saveConfig(config);
+
+      // Expand into one single-channel client per channel; register + connect each.
+      for (const sub of expandPlatformChannels(platformConfig)) {
+        const client = registerPlatform(sub, true);
+        await client.connect();
+        sessionStore.setPlatformEnabled(sub.id, true);
+        // Resume any sessions parked by an update (no-op for a brand-new platform).
+        await session.resumePausedSessionsForPlatform(sub.id).catch(() => {});
+      }
+      ui.addLog({ level: 'info', component: 'connection', message: `✓ Connection ${id} live` });
+      bridge?.broadcastConnections();
+      return { ok: true };
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      ui.addLog({ level: 'error', component: 'connection', message: `✗ Connection ${id} failed: ${error}` });
+      return { ok: false, error };
+    }
+  };
+
+  const removeConnection = async (id: string): Promise<{ ok: boolean; error?: string }> => {
+    try {
+      const idx = config.platforms.findIndex((p) => p.id === id);
+      const hasClients = Array.from(platforms.keys()).some((pid) => belongsToConnection(pid, id));
+      if (idx < 0 && !hasClients) {
+        return { ok: false, error: `No such connection: ${id}` };
+      }
+      ui.addLog({ level: 'info', component: 'connection', message: `Removing connection ${id}…` });
+      await teardownConnection(id);
+      if (idx >= 0) {
+        config.platforms.splice(idx, 1);
+        saveConfig(config);
+      }
+      ui.addLog({ level: 'info', component: 'connection', message: `✓ Connection ${id} removed` });
+      bridge?.broadcastConnections();
+      return { ok: true };
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      ui.addLog({ level: 'error', component: 'connection', message: `✗ Remove ${id} failed: ${error}` });
+      return { ok: false, error };
+    }
+  };
+
+  // Expose runtime connection management to the control channel (management
+  // console). Registered after the platform machinery exists.
+  bridge?.setConnectionHandlers({ addOrUpdateConnection, removeConnection });
+
   // Resume any persisted sessions from before restart
   await session.initialize();
 
   // Shutdown flag - shared between shutdown() and prepareForRestart callback
   let isShuttingDown = false;
+
+  // Graceful pre-restart handoff: persist sessions, stop timers, close the
+  // control socket and disconnect platforms so a fresh process can take over
+  // cleanly (sessions resume from persistence). Used by auto-update restarts
+  // AND by "leave console — keep server running" (detach to background).
+  const prepareForRestart = async (): Promise<void> => {
+    if (isShuttingDown) return;
+    isShuttingDown = true;
+
+    ui.setShuttingDown();
+    session.setShuttingDown();
+    await session.updateAllStickyMessages();
+    await session.killAllSessions();
+    autoUpdateManager?.stop();
+
+    // Close the control socket before the new process starts, so it can re-open
+    // it without racing a stale socket.
+    await bridge?.close('server restarting');
+
+    // Await disconnects so the new process can re-establish websockets without
+    // racing the old one (self-respawn starts the child within milliseconds).
+    await Promise.all(
+      Array.from(platforms.values()).map((client) =>
+        client.disconnect().catch((err) => {
+          ui.addLog({ level: 'warn', component: 'shutdown', message: `disconnect failed: ${err}` });
+        })
+      )
+    );
+
+    if (!isHeadless) {
+      process.stdout.write('\x1b[2J\x1b[H');
+      process.stdout.write('\x1b[?25h');
+    }
+  };
+
+  // "Leave console — keep server running" for a foreground server: a running
+  // Node process can't daemonize itself, so we re-launch detached & headless,
+  // hand off via prepareForRestart, and exit. The child boots as the (now
+  // sole) server and resumes persisted sessions.
+  const detachToBackground = async (): Promise<void> => {
+    // Re-exec the SAME binary we're running (process.execPath + entry script) —
+    // not `claude-threads` on PATH. This keeps a repo build (`bun start` /
+    // `bun run dev`) from accidentally relaunching a different, globally
+    // installed version in the background. (Auto-update respawn deliberately
+    // uses the PATH binary — that's the freshly-installed one; detach is not.)
+    const entry = process.argv[1];
+    if (!entry) {
+      ui.addLog({
+        level: 'error',
+        component: 'console',
+        message: 'Cannot determine own entry point — staying attached. Use "Quit server" or Ctrl+C.',
+      });
+      return;
+    }
+    ui.addLog({ level: 'info', component: 'console', message: 'Detaching — server continues in the background…' });
+    await prepareForRestart();
+    const childEnv: NodeJS.ProcessEnv = { ...process.env };
+    delete childEnv.CLAUDE_THREADS_BIN;
+    delete childEnv.CLAUDE_THREADS_INTERACTIVE;
+    try {
+      const child = spawn(process.execPath, [entry, '--headless', '--no-auto-restart'], {
+        detached: true,
+        stdio: 'ignore',
+        env: childEnv,
+      });
+      child.unref();
+    } catch {
+      // Torn down already; exit regardless so we don't sit half-shut-down.
+    }
+    process.exit(0);
+  };
 
   // Initialize auto-update manager
   autoUpdateManager = new AutoUpdateManager(config.autoUpdate, {
@@ -721,36 +1061,7 @@ async function startWithoutDaemon() {
     broadcastUpdate: (msg) => session.broadcastToAll(msg),
     postAskMessage: (ids, ver) => session.postUpdateAskMessage(ids, ver),
     refreshUI: () => session.updateAllStickyMessages(),
-    prepareForRestart: async () => {
-      // Reuse shutdown logic to persist sessions before update restart
-      if (isShuttingDown) return;
-      isShuttingDown = true;
-
-      ui.setShuttingDown();
-      session.setShuttingDown();
-      await session.updateAllStickyMessages();
-      await session.killAllSessions();
-      autoUpdateManager?.stop();
-
-      // Await disconnects so the new bot process can re-establish
-      // websockets without racing the old process. Self-respawn (added
-      // for !update on TTY-without-supervisor) tightens this timing
-      // because the new child starts within tens of milliseconds of
-      // the old process exiting.
-      await Promise.all(
-        Array.from(platforms.values()).map((client) =>
-          client.disconnect().catch((err) => {
-            ui.addLog({ level: 'warn', component: 'shutdown', message: `disconnect failed: ${err}` });
-          })
-        )
-      );
-
-      // Clear screen and restore cursor before daemon restarts us (only in interactive mode)
-      if (!isHeadless) {
-        process.stdout.write('\x1b[2J\x1b[H');  // Clear screen, cursor to home
-        process.stdout.write('\x1b[?25h');       // Restore cursor visibility
-      }
-    },
+    prepareForRestart,
   });
 
   // Connect auto-update manager to session manager for !update commands
@@ -857,6 +1168,9 @@ async function startWithoutDaemon() {
 
     // Stop auto-update manager
     autoUpdateManager?.stop();
+
+    // Close the control socket (detaches any attached management consoles).
+    await bridge?.close('server shutting down');
 
     // Disconnect all platforms
     for (const client of platforms.values()) {

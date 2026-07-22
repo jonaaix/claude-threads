@@ -152,16 +152,18 @@ export function Footer({
               </>
             )}
 
-            {/* Session count */}
+            {/* Session count + per-session actions */}
             {sessionCount > 0 && (
               <>
                 <Text dimColor>│</Text>
                 <Text dimColor>1-{Math.min(sessionCount, 9)} threads</Text>
+                <Text dimColor>[x]stop [i]nterrupt</Text>
               </>
             )}
 
             <Text dimColor>│</Text>
-            <Text dimColor>[q]uit</Text>
+            <Text dimColor>[a]dd [e]dit [r]emove conn</Text>
+            <Text dimColor>[⇧X]stop-srv [q]uit</Text>
           </>
         )}
       </Box>

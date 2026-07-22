@@ -46,6 +46,13 @@ export {
   isWriteScopeMode,
 } from './types.js';
 
+export {
+  parseChannelIds,
+  expandPlatformChannels,
+  belongsToConnection,
+  SUBPLATFORM_SEP,
+} from './channels.js';
+
 import type { Config, WorktreeMode as WorktreeModeType, PermissionMode, OverheadVisibility } from './types.js';
 
 // YAML config path

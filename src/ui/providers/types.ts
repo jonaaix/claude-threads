@@ -13,8 +13,23 @@ import type {
   UpdatePanelState,
   ToggleState,
   ToggleCallbacks,
+  SessionActionCallbacks,
   AppConfig,
 } from '../types.js';
+
+/**
+ * Pre-populated UI state. Used by the management console (client mode) to
+ * hydrate the TUI from a server snapshot on attach — so sessions, platforms,
+ * logs (with their original timestamps) and update state render immediately,
+ * before any live events arrive.
+ */
+export interface UISeedState {
+  sessions: SessionInfo[];
+  platforms: PlatformStatus[];
+  logs: LogEntry[];
+  update?: UpdatePanelState;
+  ready: boolean;
+}
 
 /**
  * Core UI operations that all providers must implement
@@ -72,9 +87,35 @@ export interface StartUIOptions {
   /** Run in headless mode (no interactive UI) */
   headless?: boolean;
 
-  /** Callback when user requests quit (Ctrl+C, q key) */
-  onQuit?: () => void;
+  /**
+   * Whether this UI drives the server itself ('server' — quitting stops the
+   * bot) or is a console attached to a separate server ('console' — quitting
+   * just detaches). Governs the quit label + confirm. Defaults to 'server'.
+   */
+  mode?: 'server' | 'console';
+
+  /**
+   * Leave the console but keep the bot running. In console mode this just
+   * detaches the socket; in server (foreground) mode it re-launches the server
+   * detached in the background and exits this process.
+   */
+  onLeave?: () => void;
+
+  /** Stop the bot entirely (ends all sessions) and exit. */
+  onStopServer?: () => void;
 
   /** Callbacks for toggle changes */
   toggleCallbacks?: ToggleCallbacks;
+
+  /** Callbacks for management actions (stop/interrupt session, stop server). */
+  actionCallbacks?: SessionActionCallbacks;
+
+  /**
+   * Current connections (secrets redacted) for the edit form. Returns the live
+   * list on the server; the last-known list in console mode.
+   */
+  getConnections?: () => unknown[];
+
+  /** Seed state for console (client) mode — hydrates the TUI on attach. */
+  initialState?: UISeedState;
 }

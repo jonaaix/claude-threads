@@ -97,6 +97,28 @@ export interface ToggleCallbacks {
   onForceUpdate?: () => void;
 }
 
+/**
+ * Management actions the console (or the server's own TUI) can trigger against
+ * a session or the server. In console mode these send IPC commands; on the
+ * server they call straight into the SessionManager.
+ */
+export interface SessionActionCallbacks {
+  /** Stop (cancel) a session — the `!stop` equivalent. */
+  onSessionCancel?: (sessionId: string) => void;
+  /** Interrupt a running session without killing it — the `!escape` equivalent. */
+  onSessionInterrupt?: (sessionId: string) => void;
+  /** Shut the whole bot down gracefully. */
+  onServerStop?: () => void;
+  /**
+   * Add or update a connection (hot-reload). The value is a
+   * PlatformInstanceConfig, kept as `unknown` here to avoid a UI→config type
+   * dependency; the console/server cast it back.
+   */
+  onConnectionSave?: (config: unknown) => void;
+  /** Remove a connection by id (hot-reload). */
+  onConnectionRemove?: (id: string) => void;
+}
+
 export interface AppState {
   config: AppConfig;
   platforms: Map<string, PlatformStatus>;

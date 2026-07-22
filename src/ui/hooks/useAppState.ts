@@ -3,18 +3,28 @@
  */
 import { useState, useCallback } from 'react';
 import type { AppState, AppConfig, SessionInfo, LogEntry, PlatformStatus } from '../types.js';
+import type { UISeedState } from '../providers/types.js';
 
 let logIdCounter = 0;
 
-export function useAppState(initialConfig: AppConfig) {
-  const [state, setState] = useState<AppState>({
-    config: initialConfig,
-    platforms: new Map(),
-    sessions: new Map(),
-    logs: [],
-    selectedSessionId: null,  // Currently selected session tab
-    ready: false,
-    shuttingDown: false,
+export function useAppState(initialConfig: AppConfig, seed?: UISeedState) {
+  const [state, setState] = useState<AppState>(() => {
+    const sessions = new Map<string, SessionInfo>(
+      (seed?.sessions ?? []).map((s) => [s.id, s]),
+    );
+    const platforms = new Map<string, PlatformStatus>(
+      (seed?.platforms ?? []).map((p) => [p.id, p]),
+    );
+    return {
+      config: initialConfig,
+      platforms,
+      sessions,
+      logs: (seed?.logs ?? []).slice(-500),
+      // Auto-select the first seeded session so the console opens on content.
+      selectedSessionId: sessions.size > 0 ? Array.from(sessions.keys())[0] : null,
+      ready: seed?.ready ?? false,
+      shuttingDown: false,
+    };
   });
 
   const setReady = useCallback(() => {

@@ -28,6 +28,9 @@
     "test:integration:all": "bun run test:integration:setup && bun run tests/integration/fixtures/slack/mock-server.ts & sleep 2 && TEST_PLATFORMS=mattermost,slack INTEGRATION_TEST=1 bun test tests/integration/suites --timeout 120000; bun run test:integration:slack:teardown",
     "lint": "eslint src/",
     "lint:fix": "eslint src/ --fix",
+    "realtest": "bun realtest/run.ts",
+    "realtest:preflight": "bun realtest/run.ts preflight",
+    "test:realtest:unit": "bun test realtest/lib/analysis.test.ts",
     "typecheck": "tsc --noEmit",
     "knip": "npx knip",
     "prepare": "husky"
@@ -95,6 +98,7 @@
     "@types/ws": "^8.18.0",
     "eslint": "^10.1.0",
     "husky": "^9.1.7",
+    "ink-testing-library": "^4.0.0",
     "lint-staged": "^17.0.4",
     "prettier": "^3.4.2",
     "typescript": "^6.0.2",

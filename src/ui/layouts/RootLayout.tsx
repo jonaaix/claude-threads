@@ -36,10 +36,14 @@ export function RootLayout({ header, footer, modal, children }: RootLayoutProps)
   // Header and footer have fixed heights
   const headerHeight = 5; // Logo (3 lines + border)
   const footerHeight = 2; // Separator + status row
-  const middleHeight = Math.max(5, terminalRows - headerHeight - footerHeight);
+  // Reserve one row: emitting exactly `terminalRows` lines makes the terminal
+  // scroll by one on each frame (trailing newline), which leaves a stale line
+  // of the previous frame visible. One row of headroom keeps rendering stable.
+  const usableRows = Math.max(headerHeight + footerHeight + 1, terminalRows - 1);
+  const middleHeight = Math.max(5, usableRows - headerHeight - footerHeight);
 
   return (
-    <Box flexDirection="column" height={terminalRows} width={terminalCols}>
+    <Box flexDirection="column" height={usableRows} width={terminalCols}>
       {/* Header - fixed, never shrinks */}
       <Box flexShrink={0} height={headerHeight}>
         {header}
