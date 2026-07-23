@@ -2124,17 +2124,20 @@ export async function handleExit(
     }
 
     if (session.lifecycle.resumeFailCount >= MAX_RESUME_FAILURES) {
-      // Too many failures - give up and delete from persistence
-      sessionLog(session).warn(`Exceeded ${MAX_RESUME_FAILURES} resume failures, removing from persistence`);
-      // Unregister from worktree but don't cleanup - user may want to recover work
-      // Orphan cleanup will handle it after 24h
-      if (session.worktreeInfo) {
-        ctx.ops.unregisterWorktreeUser(session.worktreeInfo.worktreePath, session.sessionId);
-      }
-      ctx.ops.unpersistSession(session.sessionId);
+      // Auto-resume keeps crashing. Do NOT delete the user's session — pause it
+      // instead. Pausing (isPaused=true) stops the crash-loop on every bot
+      // restart (paused sessions are skipped by auto-resume) while preserving
+      // the whole conversation, so the user can retry manually by sending a
+      // message. Reset the counter so that manual retry gets a fresh budget
+      // rather than immediately re-hitting the cap.
+      sessionLog(session).warn(`Exceeded ${MAX_RESUME_FAILURES} resume failures, pausing (data preserved) instead of deleting`);
+      transitionTo(session, 'paused');
+      session.lifecycle.resumeFailCount = 0;
+      // Keep the worktree registered — the session is still live, just paused.
+      ctx.ops.persistSession(session);
       await withErrorHandling(
-        () => postError(session, `${resumeFailFormatter.formatBold('Session permanently failed')} after ${MAX_RESUME_FAILURES} resume attempts (${exitDesc}). Session data has been removed. Please start a new session.`),
-        { action: 'Post session permanent failure', session }
+        () => post(session, 'warning', `${resumeFailFormatter.formatBold('Session paused')} — couldn't auto-resume after ${MAX_RESUME_FAILURES} attempts (${exitDesc}). Your conversation is preserved; send a message in this thread to try resuming again.`),
+        { action: 'Post session resume paused', session }
       );
     } else {
       // Still have retries left - persist with updated fail count

@@ -1084,17 +1084,24 @@ describe('handleExit', () => {
     expect(ctx.ops.persistSession).not.toHaveBeenCalled();
   });
 
-  it('unpersists resumed session after MAX_RESUME_FAILURES', async () => {
+  it('pauses (preserves) a resumed session after MAX_RESUME_FAILURES instead of deleting', async () => {
     const session = createExitTestSession({
       hasClaudeResponded: true,
       resumeFailCount: 2, // will increment to 3 = MAX
     });
+    session.lifecycle.state = 'active';
     const sessions = new Map([[session.sessionId, session]]);
     const ctx = createMockSessionContext(sessions);
 
     await lifecycle.handleExit(session.sessionId, 1, ctx);
-    expect(session.lifecycle.resumeFailCount).toBe(3);
-    expect(ctx.ops.unpersistSession).toHaveBeenCalledWith(session.sessionId);
+
+    // Data must NOT be thrown away — the session is paused and persisted so
+    // the user can retry with a new message.
+    expect(ctx.ops.unpersistSession).not.toHaveBeenCalled();
+    expect(ctx.ops.persistSession).toHaveBeenCalled();
+    expect(session.lifecycle.state as string).toBe('paused');
+    // Counter reset so a manual resume gets a fresh retry budget.
+    expect(session.lifecycle.resumeFailCount).toBe(0);
   });
 
   it('persists resumed session with retries left after transient failure', async () => {
