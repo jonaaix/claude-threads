@@ -2001,6 +2001,15 @@ export async function handleExit(
     return;
   }
 
+  // A null code means the agent was killed by a signal; surface which one so
+  // "exit code null" is actionable (SIGKILL≈OOM, SIGSEGV/SIGABRT≈crash,
+  // SIGINT/SIGTERM≈the bot itself killed it).
+  const exitSignal = session.claude.getLastExitSignal?.() ?? null;
+  const exitDesc = code === null ? `killed by ${exitSignal ?? 'a signal'}` : `exit code ${code}`;
+  if (code === null) {
+    sessionLog(session).warn(`Agent exited with no code — ${exitDesc}`);
+  }
+
   // If we're intentionally restarting (e.g., !cd), don't clean up
   if (isSessionRestarting(session)) {
     sessionLog(session).debug(`Restarting, skipping cleanup`);
@@ -2071,7 +2080,7 @@ export async function handleExit(
     // Notify user (session object still valid, just removed from map)
     const earlyExitFormatter = session.platform.getFormatter();
     await withErrorHandling(
-      () => post(session, 'warning', `${earlyExitFormatter.formatBold('Session ended')} before Claude could respond (exit code ${code}). Please start a new session.`),
+      () => post(session, 'warning', `${earlyExitFormatter.formatBold('Session ended')} before Claude could respond (${exitDesc}). Please start a new session.`),
       { action: 'Post early exit notification', session }
     );
     sessionLog(session).info(`⚠ Session ended early (exit code ${code})`);
@@ -2124,14 +2133,14 @@ export async function handleExit(
       }
       ctx.ops.unpersistSession(session.sessionId);
       await withErrorHandling(
-        () => postError(session, `${resumeFailFormatter.formatBold('Session permanently failed')} after ${MAX_RESUME_FAILURES} resume attempts (exit code ${code}). Session data has been removed. Please start a new session.`),
+        () => postError(session, `${resumeFailFormatter.formatBold('Session permanently failed')} after ${MAX_RESUME_FAILURES} resume attempts (${exitDesc}). Session data has been removed. Please start a new session.`),
         { action: 'Post session permanent failure', session }
       );
     } else {
       // Still have retries left - persist with updated fail count
       ctx.ops.persistSession(session);
       await withErrorHandling(
-        () => post(session, 'warning', `${resumeFailFormatter.formatBold('Session resume failed')} (exit code ${code}, attempt ${session.lifecycle.resumeFailCount}/${MAX_RESUME_FAILURES}). Will retry on next bot restart.`),
+        () => post(session, 'warning', `${resumeFailFormatter.formatBold('Session resume failed')} (${exitDesc}, attempt ${session.lifecycle.resumeFailCount}/${MAX_RESUME_FAILURES}). Will retry on next bot restart.`),
         { action: 'Post session resume failure', session }
       );
     }

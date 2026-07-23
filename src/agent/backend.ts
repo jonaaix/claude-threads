@@ -98,6 +98,14 @@ export interface AgentBackend {
   getPermanentFailureReason(): string | null;
 
   /**
+   * The OS signal that terminated the agent on its last exit, or null/undefined
+   * when it exited with a normal status code (or the backend has no process).
+   * Optional: process-less backends (opencode) need not implement it. Used to
+   * explain an "exit code null" — code is null exactly when a signal killed it.
+   */
+  getLastExitSignal?(): NodeJS.Signals | null;
+
+  /**
    * Latest context/usage snapshot, or null when unavailable. Claude sources
    * this from its statusline hook; other backends may always return null.
    */

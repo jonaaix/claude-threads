@@ -393,6 +393,7 @@ export class ClaudeCli extends EventEmitter implements AgentBackend {
   private statusFilePath: string | null = null;
   private lastStatusData: StatusLineData | null = null;
   private stderrBuffer = '';  // Capture stderr for error detection
+  private lastExitSignal: NodeJS.Signals | null = null;  // Signal that killed the process, if any (code is null then)
   private mcpConfigTempFile: string | null = null;  // Set when MCP config is passed via tempfile (default)
   // Deadline of the last rate-limit hit we emitted. Zero means we haven't
   // emitted one yet. Used to dedupe repeated hits at the same severity while
@@ -613,8 +614,14 @@ export class ClaudeCli extends EventEmitter implements AgentBackend {
       this.emit('error', err);
     });
 
-    this.process.on('exit', (code) => {
-      this.log.debug(`Exited ${code}`);
+    this.process.on('exit', (code, signal) => {
+      // When a process is killed by a signal, Node reports code=null and the
+      // signal name. Capture it so the session layer can tell an OOM kill
+      // (SIGKILL) or a crash (SIGSEGV/SIGABRT) apart from a deliberate
+      // shutdown/interrupt (SIGINT/SIGTERM) — otherwise "exit code null" is
+      // uninterpretable.
+      this.lastExitSignal = signal ?? null;
+      this.log.debug(`Exited code=${code}${signal ? ` signal=${signal}` : ''}`);
       this.process = null;
       this.buffer = '';
       // Release this instance's stderr budget so other sessions can use it.
@@ -736,6 +743,15 @@ export class ClaudeCli extends EventEmitter implements AgentBackend {
    */
   getLastStderr(): string {
     return this.stderrBuffer;
+  }
+
+  /**
+   * The signal that terminated the process on its last exit, or null when it
+   * exited with a normal status code. Lets the session layer explain an
+   * "exit code null" crash (code is null exactly when a signal killed it).
+   */
+  getLastExitSignal(): NodeJS.Signals | null {
+    return this.lastExitSignal;
   }
 
   /**
