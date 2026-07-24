@@ -394,6 +394,7 @@ export class ClaudeCli extends EventEmitter implements AgentBackend {
   private lastStatusData: StatusLineData | null = null;
   private stderrBuffer = '';  // Capture stderr for error detection
   private lastExitSignal: NodeJS.Signals | null = null;  // Signal that killed the process, if any (code is null then)
+  private controlRequestSeq = 0;  // Monotonic id source for stdin control_requests (interrupt)
   private mcpConfigTempFile: string | null = null;  // Set when MCP config is passed via tempfile (default)
   // Deadline of the last rate-limit hit we emitted. Zero means we haven't
   // emitted one yet. Used to dedupe repeated hits at the same severity while
@@ -848,14 +849,32 @@ export class ClaudeCli extends EventEmitter implements AgentBackend {
     });
   }
 
-  /** Interrupt current processing (like Escape in CLI) - keeps process alive */
+  /**
+   * Interrupt the current turn while KEEPING the process alive (like Escape).
+   *
+   * In `--input-format stream-json` mode the correct way to abort the current
+   * turn is a `control_request` over stdin, NOT a signal. Verified empirically
+   * against CLI 2.1.x: the turn ends with `result.subtype=error_during_execution`,
+   * a `control_response {subtype:"success"}` comes back, and the process stays
+   * alive so the very next `sendMessage()` just continues the session.
+   *
+   * A raw SIGINT would instead terminate the process (exit code null / signal
+   * SIGINT), which the session layer then treats as a pause — the exact bug
+   * this replaces. `kill()` still uses SIGINT for deliberate termination.
+   */
   interrupt(): boolean {
-    if (!this.process) {
+    if (!this.process?.stdin) {
       this.log.debug('Interrupt called but process not running');
       return false;
     }
-    this.log.debug(`Interrupting Claude process (pid=${this.process.pid})`);
-    this.process.kill('SIGINT');
+    const requestId = `int_${++this.controlRequestSeq}`;
+    const msg = JSON.stringify({
+      type: 'control_request',
+      request_id: requestId,
+      request: { subtype: 'interrupt' },
+    }) + '\n';
+    this.log.debug(`Interrupting Claude via control_request (pid=${this.process.pid}, req=${requestId})`);
+    this.process.stdin.write(msg);
     return true;
   }
 

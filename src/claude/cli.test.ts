@@ -113,6 +113,28 @@ describe('ClaudeCli', () => {
       const cli = new ClaudeCli({ workingDir: '/test' });
       expect(cli.interrupt()).toBe(false);
     });
+
+    test('sends a stream-json control_request over stdin (keeps the process alive)', () => {
+      const cli = new ClaudeCli({ workingDir: '/test' });
+      const writes: string[] = [];
+      let killed = false;
+      // Inject a fake running process with a writable stdin.
+      (cli as unknown as { process: unknown }).process = {
+        pid: 4242,
+        stdin: { write: (s: string) => writes.push(s) },
+        kill: () => { killed = true; },
+      };
+
+      expect(cli.interrupt()).toBe(true);
+      // Must NOT signal the process — a SIGINT would terminate it and the
+      // session layer would mistake that for a pause.
+      expect(killed).toBe(false);
+      expect(writes).toHaveLength(1);
+      const sent = JSON.parse(writes[0]);
+      expect(sent.type).toBe('control_request');
+      expect(sent.request.subtype).toBe('interrupt');
+      expect(typeof sent.request_id).toBe('string');
+    });
   });
 
   describe('sendMessage', () => {
