@@ -573,6 +573,18 @@ describe('context-prompt', () => {
       expect(out).not.toContain('x'.repeat(DELTA_TRUNC + 1));
     });
 
+    it('passes a realistic multi-paragraph message through WHOLE (no default truncation)', () => {
+      // A bot receiving a handoff must not silently get a cut-down history. A
+      // ~2.8k-char message (the kind that used to lose ~2.3k chars under the old
+      // 500-char cap) must arrive in full.
+      const realistic = 'Dave: ' + 'word '.repeat(560); // ~2.8k chars
+      expect(realistic.length).toBeGreaterThan(2500);
+      expect(realistic.length).toBeLessThan(DELTA_TRUNC);
+      const out = formatMissedMessagesForClaude([msg('dave', realistic)]);
+      expect(out).toContain(realistic); // verbatim, not truncated
+      expect(out).not.toContain('…');
+    });
+
     it('appends attachment URLs when no local copy is available (fallback)', () => {
       const withFile: ThreadMessage = {
         id: 'p', userId: 'u', username: 'tarek', message: 'see this', createAt: 0,

@@ -335,10 +335,23 @@ export function formatContextForClaude(messages: ThreadMessage[], previousWorkSu
 
 /** Max number of missed messages fed to a bot on a single handoff (30–50 window). */
 export const DELTA_MSG_CAP = 40;
-/** Per-message truncation, matching formatContextForClaude's 500-char cap. */
-export const DELTA_TRUNC = 500;
-/** Hard total-character budget for one delta block (~5–6k tokens worst case). */
-export const DELTA_TOTAL_CHARS = 20000;
+/**
+ * Per-message truncation for the missed-messages block. A bot receiving a
+ * handoff must NOT silently get a truncated version of what was said — losing
+ * the tail of a real message means it acts on partial context. Set generously
+ * so realistic messages pass through whole; only genuinely huge pastes get cut.
+ * (Deliberately larger than formatContextForClaude's 500-char preview cap —
+ * that's a lightweight "here's the gist" prompt, this is the bot's actual
+ * working context.)
+ */
+export const DELTA_TRUNC = 10000;
+/**
+ * Hard total-character backstop for one delta block — a safety valve against a
+ * pathological flood (dozens of huge messages), NOT a routine truncator. Sized
+ * so a normal handoff never hits it: ~40 typical messages or a few full-length
+ * ones (~7–8k tokens worst case). Raise together with DELTA_TRUNC.
+ */
+export const DELTA_TOTAL_CHARS = 30000;
 
 /**
  * Compute the messages a bot MISSED while it did not hold the baton — everything
