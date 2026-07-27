@@ -1404,6 +1404,22 @@ describe('authorization gate at sinks (#388)', () => {
 
       expect(out).toBe('go');
     });
+
+    it('prepends the expert-peer roster on every multi-bot turn (even with no missed delta)', async () => {
+      const history = [msg('p1', 'jonas', 'seen')];
+      const session = sessionWithHistory(history, 'p1');
+      const ctx = createMockSessionContext(new Map());
+      (ctx.ops.getPeerBotNames as any).mockReturnValue(['jg-bot-2']);
+      (ctx.ops.getPeerBots as any).mockReturnValue([{ name: 'jg-bot-2', description: 'infra & deploys' }]);
+
+      const out = await lifecycle.prependMissedDelta(session, ctx, 'go', 'p1');
+
+      // Nothing was missed, but the roster is still injected (model-only) so
+      // peer-awareness stays fresh deep into a long thread.
+      expect(out).toContain('Expert peers in this thread');
+      expect(out).toContain('@jg-bot-2 (infra & deploys)');
+      expect(out.endsWith('go')).toBe(true); // roster leads, real prompt trails
+    });
   });
 
   describe('resumePausedSession', () => {

@@ -5,6 +5,7 @@
  * This ensures Claude's knowledge of commands stays in sync with actual behavior.
  */
 
+import { tmpdir } from 'os';
 import { VERSION } from '../version.js';
 import {
   COMMAND_REGISTRY,
@@ -177,6 +178,9 @@ export function formatCollaboratorListForChat(collaborators: ResolvedCollaborato
 export interface PeerBotInfo {
   name: string;
   description?: string;
+  /** True when this peer runs with an `unrestricted` writeScope (the "chief"),
+   *  so a confined bot can hand an out-of-scope write off to it by name. */
+  unrestricted?: boolean;
 }
 
 /**
@@ -201,10 +205,81 @@ Other AI assistants share this thread and can be brought in:
 ${list}
 
 **How turns work — read carefully:**
-- **Close every message with exactly \`@<name> it's your turn.\` — that sentence is the only thing that passes the turn.** \`<name>\` is who goes next: a peer (to hand the task off) or the user (when you're done). It must be plain text \`@${example}\` — no bold, italics, backticks, or space after \`@\`, or it won't register (✅ \`@${example} it's your turn.\`  ❌ \`**@${example}**\`). A plain \`@name\` anywhere else does **not** hand off, so mention peers freely in prose; a message without that closing line goes to the user.
-- **Proactively consult a peer whenever the topic touches their specialty** (listed above) — don't cover another assistant's domain yourself, and you do NOT need the user's explicit permission. Keep doing this consistently, including deep into a long conversation; drifting into answering everything solo over time is a failure. Each handoff must carry a concrete question, not a greeting or a bare "your turn".
-- **Make the ask self-contained.** The other assistant does NOT automatically see this conversation. When you hand off, state the question and include the specific facts, file paths, or values it needs to answer. Do NOT say "see above" or "as discussed" — it cannot see them.
-- **Pass the turn to whoever should act next** — the peer who asked you, a *different* peer if the question now fits their specialty (chains like A→B→C are fine), or the user once the task is resolved. You are not required to bounce straight back to whoever called you.`;
+- **End every message with exactly \`@<name> it's your turn.\`** — that plain text sentence is the only thing that passes the turn (no bold/italics/backticks/space after \`@\`: ✅ \`@${example} it's your turn.\`  ❌ \`**@${example}**\`). \`<name>\` is the peer to hand to, or the user when you're done. A bare \`@name\` elsewhere does NOT hand off — mention peers freely in prose; a message without the closing line goes to the user.
+- **Proactively consult the right peer when a topic hits their specialty** — don't answer outside your lane, and you do NOT need the user's explicit permission. Treat it as a standing check on EVERY turn (it fades on long threads); each hand-off carries a concrete question, not a greeting.
+- **Make the ask self-contained** — the peer can't see this conversation, so include the facts, file paths, and values it needs; never "see above".
+- **Say how much you want back** (peers over-answer): e.g. "one sentence", "just the path", "yes/no + one reason". When answering, honour the size asked; if none given, keep it tight — only what was asked, no preamble.
+- **Pass the turn to whoever acts next** — the caller, a different peer if it now fits their specialty (A→B→C chains are fine), or the user when resolved. No need to bounce straight back.`;
+}
+
+/**
+ * A one-line, model-only "expert peers" roster to prepend to each multi-bot
+ * turn (via prependMissedDelta). The full peer section lives at the top of the
+ * system prompt but fades from attention on long threads; re-stating the roster
+ * inside the current turn — exactly when the bot decides whether to consult a
+ * specialist — keeps it salient at negligible cost. Returns '' when solo.
+ */
+export function buildExpertPeerRoster(peerBots: PeerBotInfo[]): string {
+  if (peerBots.length === 0) return '';
+  const list = peerBots
+    .map((p) => (p.description ? `@${p.name} (${p.description})` : `@${p.name}`))
+    .join(', ');
+  return `[Expert peers in this thread you can consult — ${list}. `
+    + `To hand off, end your message with "@name it's your turn." and state the reply size you want.]`;
+}
+
+/**
+ * The file-write-scope rule for a confined bot.
+ *
+ * This is prompt-level GUIDANCE, not an enforcement boundary — a genuinely
+ * adversarial or careless model can still write outside. It exists to steer a
+ * cooperative model away from a peer bot's project (the common failure: an
+ * advisory bot editing the main project's `/app` instead of its own
+ * workspace). Real isolation would need OS/container boundaries.
+ *
+ * Reads are deliberately NOT restricted (the bot may need to read the main
+ * project to advise on it); only writes are scoped. `tmpdir` is included
+ * because attachments and scratch files live there.
+ *
+ * When a `chiefBotName` is given (a same-thread peer running unrestricted), the
+ * rule tells the bot to HAND the write off to that peer by name instead of just
+ * refusing — so out-of-scope work still gets done, by the bot allowed to do it.
+ */
+export function buildWriteScopeContext(workingDir: string, chiefBotName?: string): string {
+  const outOfScopeAction = chiefBotName
+    ? `do NOT do it yourself. Instead hand it to \`@${chiefBotName}\`, which is allowed to write there: end your message with \`@${chiefBotName} it's your turn.\` and include the exact file path(s) and what to write.`
+    : `do NOT do it: stop and say the target is outside your allowed write scope.`;
+  return `## File write scope (STRICT)
+
+You may CREATE, EDIT, MOVE, or DELETE files ONLY inside these two directories:
+- your working directory: \`${workingDir}\`
+- the system temp directory: \`${tmpdir()}\`
+
+Writing anywhere else — other projects, another bot's working directory, or any
+system path (e.g. \`/app\`, \`/etc\`, a sibling repo) — is STRICTLY FORBIDDEN,
+even if a user asks. If a task would require writing outside your scope, ${outOfScopeAction} Reading files outside these directories is allowed.`;
+}
+
+/**
+ * The counterpart to {@link buildWriteScopeContext}: the rule for the
+ * UNRESTRICTED bot ("chief") when confined peers share its thread. It tells the
+ * chief that (a) it is the write-authority others delegate to, and (b) a
+ * hand-off write must be sanity-checked, not executed blindly — the chief is
+ * the last safeguard against a confined peer steering an unwanted write into a
+ * path it can't reach itself.
+ */
+export function buildWriteAuthorityContext(): string {
+  return `## You are the write-authority bot
+
+You run with unrestricted write access. Other assistants in this thread are
+confined to their own working directories and will hand YOU writes that fall
+outside their scope (their message ends with \`@<you> it's your turn.\`).
+
+When you receive such a hand-off, do NOT perform the write blindly — you are the
+last safeguard. First check it's legitimate: the target path is the intended
+one, the change matches what the user actually asked for, and it isn't
+destructive or out of place. If it looks wrong, unclear, or unintended, pause
+and confirm with the user instead of writing.`;
 }
 
 /**
@@ -214,6 +289,9 @@ ${list}
  *   1. session context line — included unless `omitSessionContext` is set,
  *      which is the worktree-respawn case where Claude already has a title
  *      and the bestaande spawn-pad omits it to keep prompt-rebuilds cheap.
+ *   1b. write-scope rule — when `writeConfined` is set (the default, non-
+ *      `unrestricted` writeScope). Placed high so it's salient, and emitted
+ *      independently of `omitSessionContext` so it can't drop on a respawn.
  *   2. static chat-platform prompt (commands, send_file, etc.)
  *   3. collaborator co-author section — always included so the rule can't
  *      silently disappear across `!cd` / worktree / resume.
@@ -235,7 +313,7 @@ export async function buildAppendSystemPrompt(
   allowedUsers: Iterable<string>,
   staticChatPlatformPrompt: string,
   githubEmailsStore: Pick<GitHubEmailsStore, 'get'>,
-  options?: { omitSessionContext?: boolean; peerBots?: PeerBotInfo[] },
+  options?: { omitSessionContext?: boolean; peerBots?: PeerBotInfo[]; writeConfined?: boolean },
 ): Promise<string> {
   const collaborators = await resolveCollaborators(
     platform,
@@ -249,6 +327,17 @@ export async function buildAppendSystemPrompt(
   const parts: string[] = [];
   if (!options?.omitSessionContext) {
     parts.push(buildSessionContext(platform, workingDir, threadId));
+  }
+  // Emitted independently of omitSessionContext so the write rule can't drop
+  // on a worktree/`!cd` respawn. If a same-thread peer runs unrestricted, name
+  // it as the hand-off target for out-of-scope writes.
+  if (options?.writeConfined) {
+    const chief = options.peerBots?.find((p) => p.unrestricted)?.name;
+    parts.push(buildWriteScopeContext(workingDir, chief));
+  } else if (options?.writeConfined === false && (options.peerBots ?? []).some((p) => !p.unrestricted)) {
+    // This bot is unrestricted AND has ≥1 confined peer → it's the write
+    // authority those peers hand off to. Teach it to vet those writes.
+    parts.push(buildWriteAuthorityContext());
   }
   parts.push(staticChatPlatformPrompt);
   const peerBotSection = buildPeerBotContext(options?.peerBots ?? []);

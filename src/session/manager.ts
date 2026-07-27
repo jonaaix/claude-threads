@@ -311,7 +311,11 @@ export class SessionManager extends EventEmitter {
     for (const [pid, client] of this.platforms) {
       if (pid === platformId) continue;
       if (sameChannel(client.getMcpConfig(), selfCfg)) {
-        peers.push({ name: client.getBotName(), description: this.platformDescription.get(pid) });
+        peers.push({
+          name: client.getBotName(),
+          description: this.platformDescription.get(pid),
+          unrestricted: this.platformWriteScope.get(pid) === 'unrestricted',
+        });
       }
     }
     return peers;
@@ -1771,6 +1775,7 @@ export class SessionManager extends EventEmitter {
       getThreadMessagesForContext: (s, limit, excludePostId) => contextPrompt.getThreadMessagesForContext(s, limit, excludePostId),
       formatContextForClaude: (messages, summary) => contextPrompt.formatContextForClaude(messages, summary),
       appendSystemPrompt: chatPlatformPromptFor(this.getContext(), session.platformId),
+      writeConfined: this.platformWriteScope.get(session.platformId) !== 'unrestricted',
       githubEmailsStore: this.githubEmailsStore,
       registerPost: (postId, tid) => this.registerPost(postId, tid),
       updateStickyMessage: () => this.updateStickyMessage(),

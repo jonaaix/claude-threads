@@ -57,5 +57,6 @@ export {
   resolveCollaborators,
   formatCollaboratorListForChat,
   buildAppendSystemPrompt,
+  buildExpertPeerRoster,
   type ResolvedCollaborator,
 } from './system-prompt-generator.js';

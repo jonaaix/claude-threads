@@ -444,6 +444,7 @@ export async function changeDirectory(
     session.sessionAllowedUsers,
     chatPlatformPromptFor(ctx, session.platformId),
     ctx.state.githubEmailsStore,
+    { writeConfined: ctx.ops.getPlatformWriteScope(session.platformId) !== 'unrestricted' },
   );
 
   const cliOptions: ClaudeCliOptions = {

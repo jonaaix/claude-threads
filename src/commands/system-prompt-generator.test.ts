@@ -11,6 +11,8 @@ import {
   resolveCollaborators,
   formatCollaboratorListForChat,
   buildAppendSystemPrompt,
+  buildWriteScopeContext,
+  buildExpertPeerRoster,
   type ResolvedCollaborator,
 } from './system-prompt-generator.js';
 import { VERSION } from '../version.js';
@@ -354,14 +356,65 @@ describe('buildPeerBotContext', () => {
   it('encourages proactive, sustained consultation of peers on their specialty', () => {
     const section = buildPeerBotContext([{ name: 'peer-bot-2', description: 'x' }]);
     // Regression: the old wording dampened handoffs ("only when it genuinely
-    // helps"), so bots consulted too rarely and less over time. Encourage it.
+    // helps"), so bots consulted too rarely and less over time. Encourage it,
+    // and frame it as a standing per-turn check so it doesn't fade on long threads.
     expect(section.toLowerCase()).toContain('proactively consult');
-    expect(section.toLowerCase()).toContain('including deep into a long conversation');
+    expect(section.toLowerCase()).toContain('standing check on every turn');
+  });
+
+  it('tells the bot to request a reply size and to keep its own answers tight', () => {
+    const section = buildPeerBotContext([{ name: 'peer-bot-2', description: 'x' }]);
+    // Regression: peers over-answered; every ask must carry a requested size,
+    // and the answering bot must honour it / default to concise.
+    expect(section.toLowerCase()).toContain('how much you want back');
+    expect(section.toLowerCase()).toContain('honour the size');
   });
 
   it('allows the turn to pass to a different peer (A→B→C chains), not just back to the caller', () => {
     const section = buildPeerBotContext([{ name: 'peer-bot-2', description: 'x' }]);
     expect(section.toLowerCase()).toContain('a→b→c');
+  });
+});
+
+describe('buildExpertPeerRoster', () => {
+  it('is empty when there are no peers', () => {
+    expect(buildExpertPeerRoster([])).toBe('');
+  });
+
+  it('renders a compact one-line roster with names + specialties', () => {
+    const r = buildExpertPeerRoster([
+      { name: 'analytics', description: 'Mixpanel analytics' },
+      { name: 'infra', description: 'deploys, CI' },
+    ]);
+    expect(r).toContain('Expert peers in this thread');
+    expect(r).toContain('@analytics (Mixpanel analytics)');
+    expect(r).toContain('@infra (deploys, CI)');
+    expect(r).toContain("it's your turn.");
+    expect(r).toContain('reply size');
+    expect(r.split('\n')).toHaveLength(1); // single line — negligible cost
+  });
+
+  it('omits the parenthetical when a peer has no description', () => {
+    const r = buildExpertPeerRoster([{ name: 'solo' }]);
+    expect(r).toContain('@solo');
+    expect(r).not.toContain('@solo (');
+  });
+});
+
+describe('buildWriteScopeContext', () => {
+  it('lists workdir + tmp and forbids writing elsewhere; refuses when no chief', () => {
+    const s = buildWriteScopeContext('/home/bot/ws');
+    expect(s).toContain('/home/bot/ws');
+    expect(s).toContain('STRICTLY FORBIDDEN');
+    expect(s).toContain('outside your allowed write scope');
+    expect(s).not.toContain('@'); // no hand-off target named
+  });
+
+  it('directs the bot to hand off to the named chief when one exists', () => {
+    const s = buildWriteScopeContext('/home/bot/ws', 'chief');
+    expect(s).toContain('`@chief`');
+    expect(s).toContain("@chief it's your turn.");
+    expect(s).not.toContain('stop and say the target'); // refuse text replaced by hand-off
   });
 });
 
@@ -414,6 +467,61 @@ describe('buildAppendSystemPrompt', () => {
       fakeStore({ mm: { bob: '111+bob@users.noreply.github.com' } }),
     );
     expect(prompt).toContain('- Bob B <111+bob@users.noreply.github.com>');
+  });
+
+  it('injects the write-scope rule only when writeConfined is set', async () => {
+    const platform = fakePlatform({});
+    const confined = await buildAppendSystemPrompt(
+      platform, 'mm', '/home/bot/ws', 't1', 'alice', ['alice'], 'STATIC', fakeStore({}),
+      { writeConfined: true },
+    );
+    expect(confined).toContain('## File write scope (STRICT)');
+    expect(confined).toContain('/home/bot/ws');
+
+    const unconfined = await buildAppendSystemPrompt(
+      platform, 'mm', '/home/bot/ws', 't1', 'alice', ['alice'], 'STATIC', fakeStore({}),
+      { writeConfined: false },
+    );
+    expect(unconfined).not.toContain('## File write scope');
+  });
+
+  it('names an unrestricted peer as the out-of-scope hand-off target', async () => {
+    const platform = fakePlatform({});
+    const prompt = await buildAppendSystemPrompt(
+      platform, 'mm', '/home/bot/ws', 't1', 'alice', ['alice'], 'STATIC', fakeStore({}),
+      { writeConfined: true, peerBots: [{ name: 'advisor' }, { name: 'chief', unrestricted: true }] },
+    );
+    // The confined bot is told to hand off to the unrestricted peer, by name.
+    expect(prompt).toContain("hand it to `@chief`");
+    expect(prompt).toContain("@chief it's your turn.");
+  });
+
+  it('gives the unrestricted bot the write-authority rule when it has confined peers', async () => {
+    const platform = fakePlatform({});
+    const prompt = await buildAppendSystemPrompt(
+      platform, 'mm', '/repo', 't1', 'alice', ['alice'], 'STATIC', fakeStore({}),
+      { writeConfined: false, peerBots: [{ name: 'advisor' }] },
+    );
+    expect(prompt).toContain('## You are the write-authority bot');
+    expect(prompt).toContain('do NOT perform the write blindly');
+    // It's the chief → it must NOT also carry the confined write-scope rule.
+    expect(prompt).not.toContain('## File write scope');
+  });
+
+  it('does NOT give the write-authority rule to a lone unrestricted bot (no confined peers)', async () => {
+    const platform = fakePlatform({});
+    const solo = await buildAppendSystemPrompt(
+      platform, 'mm', '/repo', 't1', 'alice', ['alice'], 'STATIC', fakeStore({}),
+      { writeConfined: false },
+    );
+    expect(solo).not.toContain('## You are the write-authority bot');
+
+    // All-unrestricted peers → still no chief role (nobody hands off to it).
+    const allChiefs = await buildAppendSystemPrompt(
+      platform, 'mm', '/repo', 't1', 'alice', ['alice'], 'STATIC', fakeStore({}),
+      { writeConfined: false, peerBots: [{ name: 'other', unrestricted: true }] },
+    );
+    expect(allChiefs).not.toContain('## You are the write-authority bot');
   });
 
   it('omits the session-context line when omitSessionContext is set (worktree respawn case)', async () => {

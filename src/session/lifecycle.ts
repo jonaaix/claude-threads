@@ -31,6 +31,7 @@ import { VERSION } from '../version.js';
 import {
   generateChatPlatformPrompt,
   buildAppendSystemPrompt,
+  buildExpertPeerRoster,
 } from '../commands/index.js';
 import { randomUUID } from 'crypto';
 import { existsSync } from 'fs';
@@ -391,6 +392,10 @@ export async function prependMissedDelta(
   triggeringPostId: string | undefined,
 ): Promise<string> {
   if (ctx.ops.getPeerBotNames(session.platformId).length === 0) return message;
+  // Re-state the expert-peer roster inside every multi-bot turn (model-only,
+  // never posted): the top-of-prompt peer section fades on long threads, so
+  // this keeps "who can I consult" salient exactly when the bot takes a turn.
+  const roster = buildExpertPeerRoster(ctx.ops.getPeerBots(session.platformId));
   try {
     const history = await session.platform.getThreadHistory(session.threadId, {
       limit: DELTA_MSG_CAP + 5,
@@ -407,6 +412,7 @@ export async function prependMissedDelta(
       const deltaAttachments = await resolveDeltaAttachments(session, delta);
       out = formatMissedMessagesForClaude(delta, deltaAttachments) + '\n' + message;
     }
+    if (roster) out = `${roster}\n\n${out}`;
     if (history.length > 0) {
       session.lastSeenPostId = history[history.length - 1].id;
       ctx.ops.persistSession(session);
@@ -416,7 +422,9 @@ export async function prependMissedDelta(
     sessionLog(session).warn(
       `delta-context.failed: ${err instanceof Error ? err.message : String(err)}`
     );
-    return message;
+    // The roster doesn't depend on history — still prepend it so a fetch
+    // failure doesn't also drop the peer reminder.
+    return roster ? `${roster}\n\n${message}` : message;
   }
 }
 
@@ -1187,7 +1195,10 @@ export async function startSession(
     [username],
     chatPlatformPromptFor(ctx, platformId),
     ctx.state.githubEmailsStore,
-    { peerBots: ctx.ops.getPeerBots(platformId) },
+    {
+      peerBots: ctx.ops.getPeerBots(platformId),
+      writeConfined: ctx.ops.getPlatformWriteScope(platformId) !== 'unrestricted',
+    },
   );
 
   // Which agent backend does this platform use? Decides whether we spawn the
@@ -1543,7 +1554,10 @@ export async function resumeSession(
     state.sessionAllowedUsers || [state.startedBy],
     chatPlatformPromptFor(ctx, state.platformId),
     ctx.state.githubEmailsStore,
-    { peerBots: ctx.ops.getPeerBots(state.platformId) },
+    {
+      peerBots: ctx.ops.getPeerBots(state.platformId),
+      writeConfined: ctx.ops.getPlatformWriteScope(state.platformId) !== 'unrestricted',
+    },
   );
 
   // Which backend did this session run on? Undefined predates opencode support

@@ -412,6 +412,8 @@ export async function createAndSwitchToWorktree(
     getThreadMessagesForContext: (session: Session, limit: number, excludePostId?: string) => Promise<ThreadMessage[]>;
     formatContextForClaude: (messages: ThreadMessage[], previousWorkSummary?: string) => string;
     appendSystemPrompt?: string;
+    /** Whether the bot's writes are confined (non-`unrestricted` writeScope) — adds the write-scope rule to the rebuilt prompt so it survives the worktree respawn. */
+    writeConfined?: boolean;
     githubEmailsStore: { get(platformId: string, username: string): string | undefined };
     registerPost: (postId: string, threadId: string) => void;
     updateStickyMessage: () => Promise<void>;
@@ -516,7 +518,7 @@ export async function createAndSwitchToWorktree(
             session.sessionAllowedUsers,
             options.appendSystemPrompt ?? '',
             options.githubEmailsStore,
-            { omitSessionContext: !needsTitlePrompt },
+            { omitSessionContext: !needsTitlePrompt, writeConfined: options.writeConfined },
           ),
         };
         session.claude = new ClaudeCli(cliOptions);
@@ -676,7 +678,7 @@ export async function createAndSwitchToWorktree(
           session.sessionAllowedUsers,
           options.appendSystemPrompt ?? '',
           options.githubEmailsStore,
-          { omitSessionContext: !needsTitlePrompt },
+          { omitSessionContext: !needsTitlePrompt, writeConfined: options.writeConfined },
         ),
       };
       session.claude = new ClaudeCli(cliOptions);
