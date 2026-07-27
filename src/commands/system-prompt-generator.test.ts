@@ -504,8 +504,29 @@ describe('buildAppendSystemPrompt', () => {
     );
     expect(prompt).toContain('## You are the write-authority bot');
     expect(prompt).toContain('do NOT perform the write blindly');
-    // It's the chief → it must NOT also carry the confined write-scope rule.
+    // It's the chief → NOT the confined write-scope rule, NOT the peer role.
     expect(prompt).not.toContain('## File write scope');
+    expect(prompt).not.toContain('## You are a peer contributor');
+  });
+
+  it('gives a non-chief bot the symmetric peer-contributor role in a multi-bot thread', async () => {
+    const platform = fakePlatform({});
+    // A confined bot alongside an unrestricted chief.
+    const confined = await buildAppendSystemPrompt(
+      platform, 'mm', '/repo', 't1', 'alice', ['alice'], 'STATIC', fakeStore({}),
+      { writeConfined: true, peerBots: [{ name: 'chief', unrestricted: true }] },
+    );
+    expect(confined).toContain('## You are a peer contributor here');
+    expect(confined).toContain('## File write scope'); // role + rule, both present
+    expect(confined).not.toContain('## You are the write-authority bot');
+
+    // Solo bot (no peers) → no ensemble role heading at all.
+    const solo = await buildAppendSystemPrompt(
+      platform, 'mm', '/repo', 't1', 'alice', ['alice'], 'STATIC', fakeStore({}),
+      { writeConfined: true },
+    );
+    expect(solo).not.toContain('## You are a peer contributor');
+    expect(solo).not.toContain('## You are the write-authority bot');
   });
 
   it('does NOT give the write-authority rule to a lone unrestricted bot (no confined peers)', async () => {

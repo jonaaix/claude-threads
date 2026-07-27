@@ -283,6 +283,17 @@ and confirm with the user instead of writing.`;
 }
 
 /**
+ * The self-identity heading for a NON-chief bot in a multi-bot thread — the
+ * minimal symmetric counterpart to {@link buildWriteAuthorityContext}'s
+ * heading. Deliberately a single line: persona/specialty comes from the bot's
+ * own CLAUDE.md, and the handoff/lane mechanics live in the peer section, so
+ * this only needs to place the bot in the ensemble.
+ */
+export function buildPeerContributorContext(): string {
+  return `## You are a peer contributor here, stay in your lane`;
+}
+
+/**
  * Compose the full `appendSystemPrompt` for a Claude session.
  *
  * Layers (in order, blank-line-separated):
@@ -328,16 +339,22 @@ export async function buildAppendSystemPrompt(
   if (!options?.omitSessionContext) {
     parts.push(buildSessionContext(platform, workingDir, threadId));
   }
-  // Emitted independently of omitSessionContext so the write rule can't drop
-  // on a worktree/`!cd` respawn. If a same-thread peer runs unrestricted, name
-  // it as the hand-off target for out-of-scope writes.
-  if (options?.writeConfined) {
-    const chief = options.peerBots?.find((p) => p.unrestricted)?.name;
-    parts.push(buildWriteScopeContext(workingDir, chief));
-  } else if (options?.writeConfined === false && (options.peerBots ?? []).some((p) => !p.unrestricted)) {
-    // This bot is unrestricted AND has ≥1 confined peer → it's the write
-    // authority those peers hand off to. Teach it to vet those writes.
+  // Self-identity in a multi-bot thread (symmetric): the chief gets the
+  // write-authority role, every other bot the peer-contributor role. The chief
+  // is the unrestricted bot that has ≥1 confined peer handing writes to it.
+  const peers = options?.peerBots ?? [];
+  const isChief = options?.writeConfined === false && peers.some((p) => !p.unrestricted);
+  if (isChief) {
     parts.push(buildWriteAuthorityContext());
+  } else if (peers.length > 0) {
+    parts.push(buildPeerContributorContext());
+  }
+  // The write-scope rule for a confined bot. Emitted independently of
+  // omitSessionContext so it can't drop on a worktree/`!cd` respawn; if a
+  // same-thread peer runs unrestricted, name it as the hand-off target.
+  if (options?.writeConfined) {
+    const chief = peers.find((p) => p.unrestricted)?.name;
+    parts.push(buildWriteScopeContext(workingDir, chief));
   }
   parts.push(staticChatPlatformPrompt);
   const peerBotSection = buildPeerBotContext(options?.peerBots ?? []);
