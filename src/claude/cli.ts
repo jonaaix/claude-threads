@@ -3,7 +3,7 @@ import { crossSpawn } from '../utils/spawn.js';
 import { EventEmitter } from 'events';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { existsSync, readFileSync, watchFile, unwatchFile, unlinkSync, statSync, readdirSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync, watchFile, unwatchFile, unlinkSync, statSync, readdirSync, writeFileSync, appendFileSync, mkdirSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { createLogger } from '../utils/logger.js';
@@ -581,6 +581,9 @@ export class ClaudeCli extends EventEmitter implements AgentBackend {
     });
 
     this.log.debug(`Claude process spawned: pid=${this.process.pid}`);
+    // Capture the exact system prompt this session was spawned with (opt-in,
+    // for the realtest prompt-inspection mode). No-op unless the env is set.
+    this.capturePrompt('SYSTEM PROMPT (--append-system-prompt) @ spawn', this.options.appendSystemPrompt ?? '(none)');
 
     this.process.stdout?.on('data', (chunk: Buffer) => {
       this.parseOutput(chunk.toString());
@@ -641,6 +644,27 @@ export class ClaudeCli extends EventEmitter implements AgentBackend {
     });
   }
 
+  /**
+   * Opt-in prompt capture for the realtest prompt-inspection mode. When
+   * `CLAUDE_THREADS_PROMPT_DUMP=<dir>` is set, append a labelled block to
+   * `<dir>/<logSessionId>.md` recording exactly what this session sent to the
+   * model — the spawn-time system prompt and every user turn (roster/delta
+   * included). No-op (and never throws) when the env var is unset. Purely a
+   * dev/inspection aid; mirrors the existing INTEGRATION_TEST tracing.
+   */
+  private capturePrompt(label: string, body: string): void {
+    const dir = process.env.CLAUDE_THREADS_PROMPT_DUMP;
+    if (!dir) return;
+    try {
+      mkdirSync(dir, { recursive: true });
+      const id = this.options.logSessionId ?? this.options.sessionId ?? 'unknown';
+      const file = join(dir, `${id.replace(/[^\w.-]/g, '_')}.md`);
+      appendFileSync(file, `\n\n===== ${label} =====\n${body}\n`, 'utf8');
+    } catch {
+      /* best-effort: inspection aid must never affect a real session */
+    }
+  }
+
   // Send a user message via JSON stdin.
   sendMessage(content: string): void {
     if (!this.process?.stdin) throw new Error('Not running');
@@ -651,6 +675,9 @@ export class ClaudeCli extends EventEmitter implements AgentBackend {
     }) + '\n';
     const preview = content.substring(0, 50);
     this.log.debug(`Sending: ${preview}...`);
+    // Capture the exact turn content (includes any prepended expert-peer roster
+    // + missed-messages delta) for the realtest prompt-inspection mode.
+    this.capturePrompt('USER TURN (sendMessage)', content);
     // Diagnostic for integration tests: trace every sendMessage call with caller.
     if (process.env.INTEGRATION_TEST === '1') {
       const stack = new Error().stack?.split('\n').slice(2, 6).join(' > ').replace(/\s+at\s+/g, ' < ') ?? '?';

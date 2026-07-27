@@ -26,6 +26,12 @@ export interface BotHarnessOptions {
   botNames?: [string, string];
   /** Seconds to wait for both bots to connect. */
   connectTimeoutMs?: number;
+  /**
+   * Per-bot writeScope [botA, botB]. Omit → both default (workingDir-confined).
+   * Set e.g. ['unrestricted', 'workingDir'] to exercise the chief/confined
+   * split (chief authority block on A, write-scope + hand-off to A on B).
+   */
+  writeScopes?: [string | undefined, string | undefined];
 }
 
 export interface BotHarness {
@@ -91,6 +97,7 @@ export async function startBotHarness(opts: BotHarnessOptions = {}): Promise<Bot
       sessionHeader: 'hidden',
       stickyMessage: 'hidden',
       description: i === 0 ? 'realtest bot A' : 'realtest bot B',
+      ...(opts.writeScopes?.[i] ? { writeScope: opts.writeScopes[i] } : {}),
     })),
   };
   writeFileSync(join(cfgDir, 'config.yaml'), yaml.dump(config));
