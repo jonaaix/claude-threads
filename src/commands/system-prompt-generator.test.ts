@@ -362,6 +362,16 @@ describe('buildPeerBotContext', () => {
     expect(section.toLowerCase()).toContain('standing check on every turn');
   });
 
+  it('frames the hand-off positively (self-contained message), not by claiming the peer is blind', () => {
+    const section = buildPeerBotContext([{ name: 'peer-bot-2', description: 'x' }]);
+    // Regression: claiming "the peer can't see this conversation" was untrue —
+    // we DO inject a missed-messages catch-up — and a sharp bot called it out.
+    // Frame it as a positive directive instead of a (false) visibility claim.
+    expect(section.toLowerCase()).toContain('self-contained');
+    expect(section.toLowerCase()).not.toContain("can't see");
+    expect(section.toLowerCase()).not.toContain('see this conversation');
+  });
+
   it('tells the bot to request a reply size and to keep its own answers tight', () => {
     const section = buildPeerBotContext([{ name: 'peer-bot-2', description: 'x' }]);
     // Regression: peers over-answered; every ask must carry a requested size,

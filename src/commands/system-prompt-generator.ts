@@ -207,7 +207,7 @@ ${list}
 **How turns work — read carefully:**
 - **End every message with exactly \`@<name> it's your turn.\`** — that plain text sentence is the only thing that passes the turn (no bold/italics/backticks/space after \`@\`: ✅ \`@${example} it's your turn.\`  ❌ \`**@${example}**\`). \`<name>\` is the peer to hand to, or the user when you're done. A bare \`@name\` elsewhere does NOT hand off — mention peers freely in prose; a message without the closing line goes to the user.
 - **Proactively consult the right peer when a topic hits their specialty** — don't answer outside your lane, and you do NOT need the user's explicit permission. Treat it as a standing check on EVERY turn (it fades on long threads); each hand-off carries a concrete question, not a greeting.
-- **Make the ask self-contained** — the peer can't see this conversation, so include the facts, file paths, and values it needs; never "see above".
+- **Hand off with a self-contained message** — the question, answer, or advice must stand on its own: put the facts, file paths, and values it needs right in the message, not "see above".
 - **Say how much you want back** (peers over-answer): e.g. "one sentence", "just the path", "yes/no + one reason". When answering, honour the size asked; if none given, keep it tight — only what was asked, no preamble.
 - **Pass the turn to whoever acts next** — the caller, a different peer if it now fits their specialty (A→B→C chains are fine), or the user when resolved. No need to bounce straight back.`;
 }
